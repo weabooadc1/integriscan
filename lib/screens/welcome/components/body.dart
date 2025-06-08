@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:integriscan/constant.dart';
+import 'package:integriscan/screens/signup/components/body.dart';
 
 import 'package:integriscan/screens/welcome/components/background.dart';
 import 'package:flutter_svg/svg.dart';
@@ -53,7 +54,17 @@ class Body extends StatelessWidget {
             // Sign Up button 
             LightButton(
               text: "SignUp",
-              press: () {},
+              press: () {
+
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                  builder: (context) {
+                    return SignupScreen();
+                  },
+                  ),
+                );
+              },
             ),
           ],
         ),

@@ -3,7 +3,7 @@ import 'package:integriscan/constant.dart';
 
 class AlreadyHaveAnAccountCheck extends StatelessWidget {
   final bool login;
-  final Function press;
+  final VoidCallback press;
   const AlreadyHaveAnAccountCheck({
     this.login = true,
     required this.press,
@@ -22,7 +22,7 @@ class AlreadyHaveAnAccountCheck extends StatelessWidget {
           ),
         ),
         GestureDetector(
-          onTap: (){},
+          onTap: press,
           child: Text(
             login ? "Sign Up" : "Sign In",
             style: TextStyle(
