@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "214593141990",
+    "project_id": "integriscan",
+    "storage_bucket": "integriscan.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:214593141990:android:8070ec260d10b9a2778f27",
+        "android_client_info": {
+          "package_name": "com.example.integriscan"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCCKSFrlKtCTXaEFdd6Z64JMqYNyR3BgJo"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
