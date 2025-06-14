@@ -274,7 +274,7 @@ class _LoginBodyState extends State<LoginBody> {
               },
               child: Text(
                 "Cancel",
-                style: TextStyle(color: Colors.grey),
+                style: TextStyle(color: kPrimaryColor),
               ),
             ),
             ElevatedButton(
@@ -324,7 +324,8 @@ class _LoginBodyState extends State<LoginBody> {
               style: ElevatedButton.styleFrom(
                 backgroundColor: kPrimaryColor,
               ),
-              child: Text("Send Reset Link"),
+              child: Text("Send Reset Link",
+              style: TextStyle(color: kPrimaryLightColor),),
             ),
           ],
         );

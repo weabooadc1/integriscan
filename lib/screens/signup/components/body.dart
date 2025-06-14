@@ -285,8 +285,12 @@ class _SignupScreenState extends State<SignupScreen> {
       errorMessage = "";
       _isLoading = true;
     });    try {
-      // Get the AuthProvider
-      final authProvider = Provider.of<AuthProvider>(context, listen: false);      // Attempt to register with Firebase
+      // Get the AuthProvider and store context references
+      final authProvider = Provider.of<AuthProvider>(context, listen: false);
+      final scaffoldMessenger = ScaffoldMessenger.of(context);
+      final navigator = Navigator.of(context);
+
+      // Attempt to register with Firebase
       Logger.secureLog("Component body: Attempting to register with email", email);
       final success = await authProvider.registerWithEmailAndPassword(
         email: email,
@@ -303,7 +307,7 @@ class _SignupScreenState extends State<SignupScreen> {
         if (success) {
           // Show success message
           Logger.info("Component body: Registration successful, showing snackbar");
-          ScaffoldMessenger.of(context).showSnackBar(
+          scaffoldMessenger.showSnackBar(
             const SnackBar(
               content: Text('Account created successfully!'),
               backgroundColor: Colors.green,
@@ -313,7 +317,7 @@ class _SignupScreenState extends State<SignupScreen> {
           
           // Navigate to root where the auth state can be detected
           Logger.info("Component body: Navigating to root screen");
-          Navigator.of(context).popUntil((route) => route.isFirst);
+          navigator.popUntil((route) => route.isFirst);
         } else {
           // Show error from provider
           Logger.error("Component body: Registration failed with error", authProvider.error);
