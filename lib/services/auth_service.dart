@@ -62,20 +62,24 @@ class AuthService {
     } catch (e) {
       throw NetworkException('Network error occurred while sending reset email');
     }
-  }
-
-  String _mapFirebaseError(FirebaseAuthException e) {
+  }  String _mapFirebaseError(FirebaseAuthException e) {
+    // Debug log to help identify error codes
+    print('Firebase Auth Error Code: ${e.code}');
+    print('Firebase Auth Error Message: ${e.message}');
+    
     switch (e.code) {
       case 'user-not-found':
         return 'No user found with this email.';
       case 'wrong-password':
-        return 'Wrong password provided.';
+        return 'Incorrect password. Please try again.';
+      case 'invalid-credential':
+        return 'Invalid email or password. Please check your credentials.';
+      case 'invalid-email':
+        return 'The email address is invalid.';
       case 'email-already-in-use':
         return 'The email address is already in use.';
       case 'weak-password':
         return 'The password is too weak.';
-      case 'invalid-email':
-        return 'The email address is invalid.';
       case 'operation-not-allowed':
         return 'This operation is not allowed.';
       case 'user-disabled':
@@ -84,6 +88,10 @@ class AuthService {
         return 'Too many requests. Try again later.';
       case 'network-request-failed':
         return 'Network error. Check your connection.';
+      case 'credential-already-in-use':
+        return 'This credential is already associated with a different user account.';
+      case 'requires-recent-login':
+        return 'This operation requires recent authentication. Please log in again.';
       default:
         return e.message ?? 'An unexpected error occurred.';
     }

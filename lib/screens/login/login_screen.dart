@@ -158,10 +158,14 @@ class _LoginBodyState extends State<LoginBody> {
                       )
                     : PrimaryButton(
                         text: 'Login',                        press: () async {
+                          // Store context references before async operations
+                          final scaffoldMessenger = ScaffoldMessenger.of(context);
+                          final navigator = Navigator.of(context);
+                          
                           // Validate inputs
                           final emailValidation = ValidationUtils.validateEmail(_email);
                           if (!emailValidation.isValid) {
-                            ScaffoldMessenger.of(context).showSnackBar(
+                            scaffoldMessenger.showSnackBar(
                               SnackBar(
                                 content: Text(emailValidation.error!),
                                 backgroundColor: Colors.red,
@@ -171,7 +175,7 @@ class _LoginBodyState extends State<LoginBody> {
                           }
 
                           if (_password.isEmpty) {
-                            ScaffoldMessenger.of(context).showSnackBar(
+                            scaffoldMessenger.showSnackBar(
                               const SnackBar(
                                 content: Text('Please enter your password'),
                                 backgroundColor: Colors.red,
@@ -183,28 +187,45 @@ class _LoginBodyState extends State<LoginBody> {
                           setState(() {
                             _isLoading = true;
                           });
-                            try {
+                          
+                          try {
                             final success = await authProvider.signInWithEmailAndPassword(
                               email: _email,
                               password: _password,
                             );
                             
-                            if (!success && mounted) {
-                              ScaffoldMessenger.of(context).showSnackBar(
-                                SnackBar(
-                                  content: Text(authProvider.error ?? 'Login failed'),
-                                  backgroundColor: Colors.red,
-                                ),
-                              );                            } else if (success && mounted) {
-                              // If login successful, navigate to root where the auth state can be detected
-                              Logger.info('Login successful, navigating to root');
-                              Navigator.of(context).popUntil((route) => route.isFirst);
-                            }
-                          } finally {
                             if (mounted) {
                               setState(() {
                                 _isLoading = false;
                               });
+                              
+                              if (!success) {
+                                // Show SnackBar for immediate feedback
+                                scaffoldMessenger.showSnackBar(
+                                  SnackBar(
+                                    content: Text(authProvider.error ?? 'Login failed'),
+                                    backgroundColor: Colors.red,
+                                  ),
+                                );
+                                // The persistent error text will be shown automatically via authProvider.error
+                              } else {
+                                // If login successful, navigate to root where the auth state can be detected
+                                Logger.info('Login successful, navigating to root');
+                                navigator.popUntil((route) => route.isFirst);
+                              }
+                            }
+                          } catch (e) {
+                            Logger.error('Login error', e);
+                            if (mounted) {
+                              setState(() {
+                                _isLoading = false;
+                              });
+                              scaffoldMessenger.showSnackBar(
+                                SnackBar(
+                                  content: Text('Login failed: $e'),
+                                  backgroundColor: Colors.red,
+                                ),
+                              );
                             }
                           }
                         },
