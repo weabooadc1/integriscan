@@ -1,12 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:integriscan/constant.dart';
-import 'package:integriscan/screens/signup/components/body.dart';
-
+import 'package:integriscan/screens/signup/signup_page.dart';
 import 'package:integriscan/screens/welcome/components/background.dart';
 import 'package:flutter_svg/svg.dart';
 import 'package:integriscan/component/primarybutton.dart';
 import 'package:integriscan/component/lightbutton.dart';
-import 'package:integriscan/screens/login/components/body.dart';
+import 'package:integriscan/screens/login/login_screen.dart';
 
 class Body extends StatelessWidget {
   const Body({super.key});
@@ -20,6 +19,7 @@ class Body extends StatelessWidget {
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: <Widget>[
+            const SizedBox(height: 50), // Add space at top
             Text(
               'Welcome to IntegriScan',
               style: TextStyle(
@@ -43,7 +43,7 @@ class Body extends StatelessWidget {
                   context,
                   MaterialPageRoute(
                   builder: (context) {
-                    return LoginScreen();
+                    return const LoginScreen();
                   },
                   ),
                 );
@@ -55,17 +55,17 @@ class Body extends StatelessWidget {
             LightButton(
               text: "SignUp",
               press: () {
-
                 Navigator.push(
                   context,
                   MaterialPageRoute(
                   builder: (context) {
-                    return SignupScreen();
+                    return const SignupPage();
                   },
                   ),
                 );
               },
             ),
+            const SizedBox(height: 30), // Add space at bottom
           ],
         ),
       ),

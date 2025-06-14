@@ -5,8 +5,12 @@ import 'package:flutter_svg/flutter_svg.dart';
 import 'package:integriscan/component/rounded_input_field.dart';
 import 'package:integriscan/component/rounded_password_field.dart';
 import 'package:integriscan/component/already_have_an_acc_check.dart';
-import 'package:integriscan/screens/login/components/body.dart';
+import 'package:integriscan/providers/auth_provider.dart';
+import 'package:integriscan/screens/login/login_screen.dart';
 import 'package:integriscan/screens/signup/components/background.dart';
+import 'package:integriscan/utils/logger.dart';
+import 'package:integriscan/utils/validation_utils.dart';
+import 'package:provider/provider.dart';
 
 class SignupScreen extends StatefulWidget {
   const SignupScreen({super.key});
@@ -16,16 +20,22 @@ class SignupScreen extends StatefulWidget {
 }
 
 class _SignupScreenState extends State<SignupScreen> {
+  String firstName = '';
+  String lastName = '';
+  String email = '';
   String password = '';
   String confirmPassword = '';
   String errorMessage = '';
   bool obscure = true;
+  bool _isLoading = false;
 
   bool get passwordsMatch => password == confirmPassword;
 
   @override
   Widget build(BuildContext context) {
     Size size = MediaQuery.of(context).size;
+    final authProvider = Provider.of<AuthProvider>(context);
+    
     return Scaffold(
       resizeToAvoidBottomInset: true,
       body: SignupBackground(
@@ -46,8 +56,7 @@ class _SignupScreenState extends State<SignupScreen> {
                           icon: Icon(Icons.arrow_back, color: kPrimaryColor),
                           onPressed: () {
                             Navigator.pop(context);
-                          },
-                        ),
+                          },                        ),
                       ),
                     ),
                   ),
@@ -63,15 +72,42 @@ class _SignupScreenState extends State<SignupScreen> {
                             color: kPrimaryColor,
                           ),
                         ),
-                        SizedBox(height: size.height * 0.03),
-                        SvgPicture.asset(
+                        SizedBox(height: size.height * 0.03),                        SvgPicture.asset(
                           'assets/icons/signup.svg',
                           height: size.height * 0.25,
                         ),
                         SizedBox(height: size.height * 0.01),
+                        // First Name Field
+                        RoundedInputField(
+                          hint: "First Name",
+                          icon: Icons.person,
+                          onChanged: (value) {
+                            setState(() {
+                              firstName = value.trim();
+                            });
+                          },
+                        ),
+                        SizedBox(height: size.height * 0.01),
+                        // Last Name Field
+                        RoundedInputField(
+                          hint: "Last Name",
+                          icon: Icons.person,
+                          onChanged: (value) {
+                            setState(() {
+                              lastName = value.trim();
+                            });
+                          },
+                        ),
+                        SizedBox(height: size.height * 0.01),
+                        // Email Field
                         RoundedInputField(
                           hint: "Enter Your Email",
-                          onChanged: (value) {},
+                          icon: Icons.email,
+                          onChanged: (value) {
+                            setState(() {
+                              email = value.trim();
+                            });
+                          },
                         ),
                         SizedBox(height: size.height * 0.01),
                         // Error message
@@ -86,6 +122,19 @@ class _SignupScreenState extends State<SignupScreen> {
                               ),
                             ),
                           ),
+                        // Show Firebase auth error if any
+                        if (authProvider.error != null)
+                          Padding(
+                            padding: const EdgeInsets.symmetric(horizontal: 32),
+                            child: Text(
+                              authProvider.error!,
+                              style: TextStyle(
+                                color: Colors.red[700],
+                                fontSize: 14,
+                              ),
+                              textAlign: TextAlign.center,
+                            ),
+                          ),
                         RoundedPasswordField(
                           onChanged: (value) {
                             setState(() {
@@ -97,11 +146,14 @@ class _SignupScreenState extends State<SignupScreen> {
                         SizedBox(height: size.height * 0.01),
                         // Confirm Password Field
                         ConfirmPassword(size),
-                        PrimaryButton(
-                          text: 'Sign Up',
-                          press: _handleSignup,
-                        ),
-                        SizedBox(height: size.height * 0.01),
+                        _isLoading
+                          ? CircularProgressIndicator(
+                              valueColor: AlwaysStoppedAnimation<Color>(kPrimaryColor),
+                            )
+                          : PrimaryButton(
+                              text: 'Sign Up',
+                              press: _handleSignup,
+                            ),                        SizedBox(height: size.height * 0.01),
                         AlreadyHaveAnAccountCheck(
                           login: false,
                           press:(){
@@ -170,6 +222,7 @@ class _SignupScreenState extends State<SignupScreen> {
                               },
                             ),
                             hintText: "Confirm Password",
+                            hintStyle: TextStyle(color: Colors.grey),
                             border: InputBorder.none,
                           ),
                         ),
@@ -182,26 +235,101 @@ class _SignupScreenState extends State<SignupScreen> {
     } else {
       errorMessage = "";
     }
-  }
-
-  void _handleSignup() {
-    if (password.isEmpty || confirmPassword.isEmpty) {
+  }  Future<void> _handleSignup() async {
+    // First Name validation
+    final firstNameValidation = ValidationUtils.validateName(firstName, "First name");
+    if (!firstNameValidation.isValid) {
       setState(() {
-        errorMessage = "Please fill in both password fields";
+        errorMessage = firstNameValidation.error!;
+      });
+      return;
+    }
+    
+    // Last Name validation
+    final lastNameValidation = ValidationUtils.validateName(lastName, "Last name");
+    if (!lastNameValidation.isValid) {
+      setState(() {
+        errorMessage = lastNameValidation.error!;
+      });
+      return;
+    }
+    
+    // Email validation
+    final emailValidation = ValidationUtils.validateEmail(email);
+    if (!emailValidation.isValid) {
+      setState(() {
+        errorMessage = emailValidation.error!;
+      });
+      return;
+    }
+    
+    // Password validation
+    final passwordValidation = ValidationUtils.validatePassword(password);
+    if (!passwordValidation.isValid) {
+      setState(() {
+        errorMessage = passwordValidation.error!;
       });
       return;
     }
 
-    if (!passwordsMatch) {
+    // Confirm password validation
+    final passwordMatchValidation = ValidationUtils.validatePasswordMatch(password, confirmPassword);
+    if (!passwordMatchValidation.isValid) {
       setState(() {
-        errorMessage = "Passwords do not match";
+        errorMessage = passwordMatchValidation.error!;
       });
       return;
     }
 
     setState(() {
       errorMessage = "";
-    });
-    // Proceed with signup logic
+      _isLoading = true;
+    });    try {
+      // Get the AuthProvider
+      final authProvider = Provider.of<AuthProvider>(context, listen: false);      // Attempt to register with Firebase
+      Logger.secureLog("Component body: Attempting to register with email", email);
+      final success = await authProvider.registerWithEmailAndPassword(
+        email: email,
+        password: password,
+        firstName: firstName,
+        lastName: lastName,
+      );
+      
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+        });
+        
+        if (success) {
+          // Show success message
+          Logger.info("Component body: Registration successful, showing snackbar");
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Account created successfully!'),
+              backgroundColor: Colors.green,
+              duration: Duration(seconds: 2),
+            ),
+          );
+          
+          // Navigate to root where the auth state can be detected
+          Logger.info("Component body: Navigating to root screen");
+          Navigator.of(context).popUntil((route) => route.isFirst);
+        } else {
+          // Show error from provider
+          Logger.error("Component body: Registration failed with error", authProvider.error);
+          setState(() {
+            errorMessage = authProvider.error ?? "Registration failed";
+          });
+        }
+      }
+    } catch (e) {
+      Logger.error("Component body: Error during signup", e);
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+          errorMessage = "An error occurred during registration: $e";
+        });
+      }
+    }
   }
 }
