@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:integriscan/services/auth_service.dart';
+import 'package:integriscan/services/firestore_service.dart';
 import 'package:integriscan/utils/logger.dart';
 import 'package:integriscan/exceptions/app_exceptions.dart';
 
@@ -12,6 +13,9 @@ class AuthProvider extends ChangeNotifier {
   bool _isLoading = false;
   String? _error;
   StreamSubscription<User?>? _authSubscription;
+
+  Map<String, dynamic>? _userProfile;
+  Map<String, dynamic>? get userProfile => _userProfile;
 
   AuthProvider() {
     _init();
@@ -46,16 +50,17 @@ class AuthProvider extends ChangeNotifier {
   }) async {
     _setLoading(true);
     _clearError();
-    
-    try {      final userCredential = await _authService.signInWithEmailAndPassword(
+    try {
+      final userCredential = await _authService.signInWithEmailAndPassword(
         email: email,
         password: password,
       );
-      
       Logger.secureLog("Sign in successful", userCredential.user?.email ?? 'unknown');
       _user = userCredential.user;
+      await fetchUserProfile();
       _setLoading(false);
-      notifyListeners();      return true;
+      notifyListeners();
+      return true;
     } on AuthException catch (e) {
       Logger.error("Sign in AuthException", e.message);
       _setError(e.message);
@@ -157,6 +162,15 @@ class AuthProvider extends ChangeNotifier {
       return false;
     }
   }
+
+  // Fetch user profile from Firestore
+  Future<void> fetchUserProfile() async {
+    if (_user != null) {
+      _userProfile = await FirestoreService.getUser(_user!.uid);
+      notifyListeners();
+    }
+  }
+
   // Helper methods
   void _setLoading(bool value) {
     if (_isLoading != value) {

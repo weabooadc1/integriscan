@@ -5,12 +5,15 @@ import 'package:flutter_svg/flutter_svg.dart';
 import 'package:integriscan/component/rounded_input_field.dart';
 import 'package:integriscan/component/rounded_password_field.dart';
 import 'package:integriscan/component/already_have_an_acc_check.dart';
-import 'package:integriscan/providers/auth_provider.dart';
+import 'package:integriscan/providers/auth_provider.dart' as custom_auth;
 import 'package:integriscan/screens/login/login_screen.dart';
 import 'package:integriscan/screens/signup/components/background.dart';
 import 'package:integriscan/utils/logger.dart';
 import 'package:integriscan/utils/validation_utils.dart';
 import 'package:provider/provider.dart';
+import 'package:integriscan/database/database_helper.dart';
+import 'package:integriscan/services/firestore_service.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 
 class SignupScreen extends StatefulWidget {
   const SignupScreen({super.key});
@@ -34,7 +37,7 @@ class _SignupScreenState extends State<SignupScreen> {
   @override
   Widget build(BuildContext context) {
     Size size = MediaQuery.of(context).size;
-    final authProvider = Provider.of<AuthProvider>(context);
+    final authProvider = Provider.of<custom_auth.AuthProvider>(context);
     
     return Scaffold(
       resizeToAvoidBottomInset: true,
@@ -286,7 +289,7 @@ class _SignupScreenState extends State<SignupScreen> {
       _isLoading = true;
     });    try {
       // Get the AuthProvider and store context references
-      final authProvider = Provider.of<AuthProvider>(context, listen: false);
+      final authProvider = Provider.of<custom_auth.AuthProvider>(context, listen: false);
       final scaffoldMessenger = ScaffoldMessenger.of(context);
       final navigator = Navigator.of(context);
 
@@ -305,6 +308,25 @@ class _SignupScreenState extends State<SignupScreen> {
         });
         
         if (success) {
+          // Store user locally in SQLite
+          await DatabaseHelper().insertUser({
+            'firstName': firstName,
+            'lastName': lastName,
+            'email': email,
+            'password': password, // In production, hash the password!
+          });
+
+          // Store user online in Firestore
+          final user = FirebaseAuth.instance.currentUser;
+          if (user != null) {
+            await FirestoreService.saveUser(
+              uid: user.uid,
+              firstName: firstName,
+              lastName: lastName,
+              email: email,
+            );
+          }
+
           // Show success message
           Logger.info("Component body: Registration successful, showing snackbar");
           scaffoldMessenger.showSnackBar(

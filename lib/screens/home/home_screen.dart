@@ -1,6 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:integriscan/constant.dart';
 import 'package:integriscan/providers/auth_provider.dart';
+import 'package:integriscan/screens/mock_local_users_screen.dart';
+import 'package:integriscan/screens/profile_screen.dart';
+import 'package:integriscan/screens/rtsp_stream_screen.dart';
 import 'package:provider/provider.dart';
 
 class HomeScreen extends StatelessWidget {
@@ -8,6 +11,7 @@ class HomeScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     final authProvider = Provider.of<AuthProvider>(context);
     final user = authProvider.user;
+    final userProfile = authProvider.userProfile;
     
     return Scaffold(
       backgroundColor: Colors.grey[50],
@@ -59,7 +63,9 @@ class HomeScreen extends StatelessWidget {
                           ),
                           const SizedBox(height: 2),
                           Text(
-                            user?.displayName ?? user?.email?.split('@').first ?? 'User',
+                            userProfile != null
+                              ? ((userProfile['firstName'] ?? '') + ' ' + (userProfile['lastName'] ?? '')).trim()
+                              : user?.displayName ?? user?.email?.split('@').first ?? 'User',
                             style: const TextStyle(
                               fontSize: 18,
                               fontWeight: FontWeight.w600,
@@ -95,7 +101,24 @@ class HomeScreen extends StatelessWidget {
                 padding: const EdgeInsets.all(20),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [                    // Stats Card
+                  children: [
+                    // View Local Users Button
+                    SizedBox(
+                      width: double.infinity,
+                      child: ElevatedButton(
+                        onPressed: () {
+                          Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (context) => const MockLocalUsersScreen(),
+                            ),
+                          );
+                        },
+                        child: const Text('View Local Users'),
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                    // Stats Card
                     Container(
                       width: double.infinity,
                       padding: const EdgeInsets.all(20),
@@ -175,17 +198,12 @@ class HomeScreen extends StatelessWidget {
                                 Expanded(
                                   child: _buildModernActionCard(
                                     context,
-                                    title: 'Scan Document',
-                                    subtitle: 'Start scanning',
+                                    title: 'Start Scan',
+                                    
                                     icon: Icons.document_scanner,
                                     color: Colors.blue,
                                     onTap: () {
-                                      ScaffoldMessenger.of(context).showSnackBar(
-                                        const SnackBar(
-                                          content: Text('Scan Document functionality coming soon!'),
-                                          behavior: SnackBarBehavior.floating,
-                                        ),
-                                      );
+                                      _showRtspUrlDialog(context);
                                     },
                                   ),
                                 ),
@@ -194,7 +212,7 @@ class HomeScreen extends StatelessWidget {
                                   child: _buildModernActionCard(
                                     context,
                                     title: 'View History',
-                                    subtitle: 'Recent scans',
+                                    
                                     icon: Icons.history,
                                     color: Colors.green,
                                     onTap: () {
@@ -215,17 +233,16 @@ class HomeScreen extends StatelessWidget {
                                 Expanded(
                                   child: _buildModernActionCard(
                                     context,
-                                    title: 'Settings',
-                                    subtitle: 'Preferences',
+                                    title: 'Edit Profile',
                                     icon: Icons.settings,
                                     color: Colors.orange,
                                     onTap: () {
-                                      ScaffoldMessenger.of(context).showSnackBar(
-                                        const SnackBar(
-                                          content: Text('Settings functionality coming soon!'),
-                                          behavior: SnackBarBehavior.floating,
-                                        ),
-                                      );
+                                        Navigator.push(
+                                          context,
+                                          MaterialPageRoute(
+                                            builder: (context) => const ProfileScreen(),
+                                          ),
+                                        );
                                     },
                                   ),
                                 ),
@@ -234,7 +251,7 @@ class HomeScreen extends StatelessWidget {
                                   child: _buildModernActionCard(
                                     context,
                                     title: 'Help',
-                                    subtitle: 'Get support',
+                                    
                                     icon: Icons.help_outline,
                                     color: Colors.purple,
                                     onTap: () {
@@ -327,10 +344,44 @@ class HomeScreen extends StatelessWidget {
         ),
       ),
     );
-  }  Widget _buildModernActionCard(
+  }  
+  
+  Future<void> _showRtspUrlDialog(BuildContext context) async {
+    final controller = TextEditingController(text: 'rtsp://');
+    final result = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Enter RTSP URL'),
+        content: TextField(
+          controller: controller,
+          decoration: const InputDecoration(hintText: 'rtsp://username:password@ip:port/path'),
+          autofocus: true,
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(context, controller.text.trim()),
+            child: const Text('Start'),
+          ),
+        ],
+      ),
+    );
+    if (result != null && result.isNotEmpty && result.startsWith('rtsp://')) {
+      Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (context) => RtspStreamScreen(rtspUrl: result),
+        ),
+      );
+    }
+  }
+
+  Widget _buildModernActionCard(
     BuildContext context, {
     required String title,
-    required String subtitle,
     required IconData icon,
     required Color color,
     required VoidCallback onTap,
@@ -389,17 +440,6 @@ class HomeScreen extends StatelessWidget {
                   ),
                 ),
                 const SizedBox(height: 4),
-                Flexible(
-                  child: Text(
-                    subtitle,
-                    style: TextStyle(
-                      fontSize: 12,
-                      color: Colors.grey[600],
-                    ),
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                ),
               ],
             ),
           ),
