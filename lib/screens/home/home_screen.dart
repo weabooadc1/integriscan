@@ -2,8 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:integriscan/constant.dart';
 import 'package:integriscan/providers/auth_provider.dart';
 import 'package:integriscan/screens/mock_local_users_screen.dart';
-import 'package:integriscan/screens/profile_screen.dart';
-import 'package:integriscan/screens/rtsp_stream_screen.dart';
+import 'package:integriscan/screens/profile/profile_screen.dart';
+import 'package:integriscan/screens/rtsp/rtsp_stream_screen.dart';
 import 'package:provider/provider.dart';
 
 class HomeScreen extends StatelessWidget {

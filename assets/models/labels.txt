@@ -1,0 +1,10 @@
+No Damage
+Crack
+Rust
+Corrosion
+Dent
+Wear
+Scratch
+Hole
+Discoloration
+Other Damage
