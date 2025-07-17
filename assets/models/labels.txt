@@ -1,10 +1,4 @@
-No Damage
 Crack
+Deformation
 Rust
-Corrosion
-Dent
-Wear
-Scratch
-Hole
-Discoloration
-Other Damage
+Scaling

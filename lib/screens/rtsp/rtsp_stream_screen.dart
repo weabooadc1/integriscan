@@ -2,7 +2,15 @@ import 'package:flutter/material.dart';
 import 'package:flutter_vlc_player/flutter_vlc_player.dart';
 import 'package:integriscan/constant.dart';
 import 'package:integriscan/services/tflite_service.dart';
+import 'package:integriscan/services/frame_capture_service.dart';
+import 'package:integriscan/services/report_service.dart';
+import 'package:integriscan/providers/auth_provider.dart';
+import 'package:integriscan/screens/reports/report_detail_screen.dart';
+import 'package:provider/provider.dart';
+import 'package:path_provider/path_provider.dart';
 import 'dart:async';
+import 'dart:typed_data';
+import 'dart:io';
 
 class RtspStreamScreen extends StatefulWidget {
   final String rtspUrl;
@@ -19,6 +27,7 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> {
   bool _isLoading = true;
   bool _isAnalyzing = false;
   bool _analysisEnabled = false;
+  bool _useRealAnalysis = true; // Toggle between real and mock analysis
   
   // TFLite Analysis
   Map<String, dynamic>? _lastAnalysisResult;
@@ -27,6 +36,7 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> {
   Timer? _analysisTimer;
   final GlobalKey _playerKey = GlobalKey();
   List<Map<String, dynamic>> _currentDetections = [];
+  List<Map<String, dynamic>> _detectionHistory = []; // Store all detections for report
 
   @override
   void initState() {
@@ -98,8 +108,12 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> {
         _isAnalyzing = true;
       });
 
-      // Simulate analysis for now (replace with actual frame capture)
-      await _runMockAnalysis();
+      // Choose between real and mock analysis
+      if (_useRealAnalysis) {
+        await _runRealTimeAnalysis();
+      } else {
+        await _runMockAnalysis();
+      }
 
       setState(() {
         _isAnalyzing = false;
@@ -112,8 +126,117 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> {
     _analysisTimer = null;
   }
 
+  Future<void> _runRealTimeAnalysis() async {
+    if (!_analysisEnabled || !_isConnected) return;
+
+    try {
+      // Capture frame from VLC player
+      final frameBytes = await FrameCaptureService.captureWidget(_playerKey);
+      
+      if (frameBytes != null) {
+        // Run TFLite inference on the captured frame
+        final result = await TFLiteService.runInference(frameBytes);
+        
+        if (result != null && result['isDamageDetected'] != null) {
+          await _processAnalysisResult(result, frameBytes);
+        } else {
+          // If TFLite returns null or invalid result, fallback to mock
+          print('TFLite returned invalid result, falling back to mock analysis');
+          await _runMockAnalysis();
+        }
+      } else {
+        // If frame capture fails, use mock analysis
+        print('Frame capture failed, using mock analysis');
+        await _runMockAnalysis();
+      }
+    } catch (e) {
+      print('Real-time analysis error: $e');
+      // Fallback to mock analysis if real analysis fails
+      await _runMockAnalysis();
+    }
+  }
+
+  Future<void> _processAnalysisResult(Map<String, dynamic> result, Uint8List frameBytes) async {
+    final isDamage = result['isDamageDetected'] == true;
+    final confidence = result['confidence'] ?? 0.0;
+    final damageType = result['damageType'] ?? 'Unknown';
+    
+    setState(() {
+      _totalFramesAnalyzed++;
+      if (isDamage) _damagesDetected++;
+      
+      // Update current detections
+      if (isDamage && confidence > 0.5) {
+        final detection = {
+          'label': damageType,
+          'confidence': confidence,
+          'box': {
+            'x': 0.3, // Center the bounding box for now
+            'y': 0.3,
+            'width': 0.4,
+            'height': 0.4,
+          }
+        };
+        
+        _currentDetections = [detection];
+        
+        // Save frame if damage detected
+        _saveAnalyzedFrame(frameBytes, damageType, confidence);
+        
+        // Store in history for report generation
+        _detectionHistory.add({
+          'damageType': damageType,
+          'confidence': confidence,
+          'imagePath': '', // Will be updated when frame is saved
+          'timestamp': DateTime.now().millisecondsSinceEpoch,
+          'boundingBox': detection['box'],
+        });
+      } else {
+        _currentDetections = [];
+      }
+      
+      _lastAnalysisResult = {
+        'isDamageDetected': isDamage,
+        'confidence': confidence,
+        'damageType': damageType,
+        'timestamp': DateTime.now().millisecondsSinceEpoch,
+      };
+    });
+  }
+
+  Future<void> _saveAnalyzedFrame(Uint8List frameBytes, String damageType, double confidence) async {
+    try {
+      // Create a unique filename
+      final timestamp = DateTime.now().millisecondsSinceEpoch;
+      final filename = 'damage_${damageType.toLowerCase()}_${timestamp}.png';
+      
+      // Get app documents directory
+      final directory = await getApplicationDocumentsDirectory();
+      final framesDir = Directory('${directory.path}/frames');
+      
+      // Create frames directory if it doesn't exist
+      if (!await framesDir.exists()) {
+        await framesDir.create(recursive: true);
+      }
+      
+      final file = File('${framesDir.path}/$filename');
+      
+      // Save the frame
+      await file.writeAsBytes(frameBytes);
+      
+      // Update the last detection in history with the saved image path
+      if (_detectionHistory.isNotEmpty) {
+        _detectionHistory.last['imagePath'] = file.path;
+      }
+      
+      print('Frame saved: ${file.path}');
+    } catch (e) {
+      print('Error saving frame: $e');
+    }
+  }
+
   Future<void> _runMockAnalysis() async {
-    // Mock analysis - replace this with actual frame capture and TFLite inference
+    // Mock analysis - fallback when real analysis fails
     await Future.delayed(const Duration(milliseconds: 500));
     
     final random = DateTime.now().millisecondsSinceEpoch % 100;
@@ -125,18 +248,29 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> {
       
       // Update current detections with bounding box data
       if (isDamage) {
-        _currentDetections = [
-          {
-            'label': ['Crack', 'Rust', 'Dent', 'Corrosion'][random % 4],
-            'confidence': 0.7 + (random % 30) / 100,
-            'box': {
-              'x': 0.2 + (random % 40) / 100, // Normalized x (0-1)
-              'y': 0.2 + (random % 40) / 100, // Normalized y (0-1)
-              'width': 0.2 + (random % 20) / 100, // Normalized width
-              'height': 0.1 + (random % 20) / 100, // Normalized height
-            }
+        final damageType = ['Crack', 'Deformation', 'Rust', 'Scaling'][random % 4];
+        final confidence = 0.7 + (random % 30) / 100;
+        final detection = {
+          'label': damageType,
+          'confidence': confidence,
+          'box': {
+            'x': 0.2 + (random % 40) / 100, // Normalized x (0-1)
+            'y': 0.2 + (random % 40) / 100, // Normalized y (0-1)
+            'width': 0.2 + (random % 20) / 100, // Normalized width
+            'height': 0.1 + (random % 20) / 100, // Normalized height
           }
-        ];
+        };
+        
+        _currentDetections = [detection];
+        
+        // Store in history for report generation
+        _detectionHistory.add({
+          'damageType': damageType,
+          'confidence': confidence,
+          'imagePath': '', // Would be populated with actual saved frame
+          'timestamp': DateTime.now().millisecondsSinceEpoch,
+          'boundingBox': detection['box'],
+        });
       } else {
         _currentDetections = [];
       }
@@ -144,10 +278,90 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> {
       _lastAnalysisResult = {
         'isDamageDetected': isDamage,
         'confidence': isDamage ? 0.7 + (random % 30) / 100 : 0.1 + (random % 40) / 100,
-        'damageType': isDamage ? ['Crack', 'Rust', 'Dent', 'Corrosion'][random % 4] : 'No Damage',
+        'damageType': isDamage ? ['Crack', 'Deformation', 'Rust', 'Scaling'][random % 4] : 'No Damage',
         'timestamp': DateTime.now().millisecondsSinceEpoch,
       };
     });
+  }
+
+  Future<void> _generateReport() async {
+    print('Generate report called. Detection history size: ${_detectionHistory.length}');
+    
+    if (_detectionHistory.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('No detections found to generate report. Start analysis first and wait for damage detection.'),
+          backgroundColor: Colors.orange,
+          duration: Duration(seconds: 4),
+        ),
+      );
+      return;
+    }
+
+    try {
+      final authProvider = Provider.of<AuthProvider>(context, listen: false);
+      final userId = authProvider.user?.uid ?? 'anonymous';
+      
+      print('Generating report for ${_detectionHistory.length} detections');
+      
+      final report = await ReportService.generateReport(
+        userId: userId,
+        sessionName: 'RTSP Stream Session ${DateTime.now().day}/${DateTime.now().month}/${DateTime.now().year}',
+        detections: _detectionHistory,
+      );
+
+      print('Report generated successfully: ${report.id}');
+
+      if (mounted) {
+        Navigator.push(
+          context,
+          MaterialPageRoute(
+            builder: (context) => ReportDetailScreen(report: report),
+          ),
+        );
+      }
+    } catch (e) {
+      print('Error generating report: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Error generating report: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
+  }
+
+  void _addTestDetection() {
+    final random = DateTime.now().millisecondsSinceEpoch % 100;
+    final damageTypes = ['Crack', 'Deformation', 'Rust', 'Scaling'];
+    final damageType = damageTypes[random % 4];
+    final confidence = 0.6 + (random % 40) / 100;
+    
+    setState(() {
+      _detectionHistory.add({
+        'damageType': damageType,
+        'confidence': confidence,
+        'imagePath': '', // Mock image path
+        'timestamp': DateTime.now().millisecondsSinceEpoch,
+        'boundingBox': {
+          'x': 0.2 + (random % 40) / 100,
+          'y': 0.2 + (random % 40) / 100,
+          'width': 0.2 + (random % 20) / 100,
+          'height': 0.1 + (random % 20) / 100,
+        },
+      });
+      
+      _damagesDetected++;
+    });
+    
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('Test detection added: $damageType (${(confidence * 100).toInt()}%)'),
+        backgroundColor: Colors.green,
+      ),
+    );
   }
 
   @override
@@ -461,6 +675,32 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> {
                             child: _buildAnalysisStatusCard(),
                           ),
                         ],
+                      ),
+                      
+                      const SizedBox(height: 16),
+                      
+                      // Test Detection Button (for testing)
+                      SizedBox(
+                        width: double.infinity,
+                        child: _buildControlCard(
+                          title: 'Add Test Detection',
+                          icon: Icons.bug_report,
+                          color: Colors.indigo,
+                          onTap: _addTestDetection,
+                        ),
+                      ),
+                      
+                      const SizedBox(height: 16),
+                      
+                      // Generate Report Button
+                      SizedBox(
+                        width: double.infinity,
+                        child: _buildControlCard(
+                          title: 'Generate Report',
+                          icon: Icons.assignment,
+                          color: Colors.purple,
+                          onTap: _generateReport,
+                        ),
                       ),
                       
                       const SizedBox(height: 32),

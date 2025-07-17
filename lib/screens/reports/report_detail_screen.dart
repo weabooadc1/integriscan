@@ -1,0 +1,344 @@
+import 'package:flutter/material.dart';
+import 'package:integriscan/models/report_models.dart';
+import 'package:integriscan/services/recommendations_service.dart';
+import 'dart:io';
+
+class ReportDetailScreen extends StatelessWidget {
+  final DetectionReport report;
+
+  const ReportDetailScreen({super.key, required this.report});
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: Colors.grey[50],
+      appBar: AppBar(
+        title: Text(report.sessionName),
+        backgroundColor: Colors.white,
+        foregroundColor: Colors.black87,
+        elevation: 0,
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.share),
+            onPressed: () => _shareReport(),
+          ),
+        ],
+      ),
+      body: SingleChildScrollView(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            _buildReportHeader(),
+            _buildSummaryCard(),
+            _buildDetectionsList(),
+            _buildRecommendationsCard(),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildReportHeader() {
+    return Container(
+      width: double.infinity,
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          colors: [Colors.blue.shade600, Colors.blue.shade800],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+        ),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'Inspection Report',
+              style: TextStyle(
+                fontSize: 24,
+                fontWeight: FontWeight.bold,
+                color: Colors.white,
+              ),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              'Generated: ${_formatDate(report.createdAt)}',
+              style: const TextStyle(
+                fontSize: 16,
+                color: Colors.white70,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildSummaryCard() {
+    return Card(
+      margin: const EdgeInsets.all(16),
+      elevation: 2,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'Summary',
+              style: TextStyle(
+                fontSize: 20,
+                fontWeight: FontWeight.bold,
+                color: Colors.black87,
+              ),
+            ),
+            const SizedBox(height: 16),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                _buildSummaryItem('Total Detections', report.summary.totalDetections.toString(), Colors.blue),
+                _buildSummaryItem('Critical', report.summary.criticalCount.toString(), Colors.red),
+                _buildSummaryItem('Moderate', report.summary.moderateCount.toString(), Colors.orange),
+                _buildSummaryItem('Minor', report.summary.minorCount.toString(), Colors.green),
+              ],
+            ),
+            const SizedBox(height: 16),
+            Row(
+              children: [
+                const Text('Overall Severity: ', style: TextStyle(fontWeight: FontWeight.w600)),
+                _buildSeverityBadge(report.summary.overallSeverity),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildSummaryItem(String label, String value, Color color) {
+    return Column(
+      children: [
+        Text(
+          value,
+          style: TextStyle(
+            fontSize: 24,
+            fontWeight: FontWeight.bold,
+            color: color,
+          ),
+        ),
+        Text(
+          label,
+          style: TextStyle(
+            fontSize: 12,
+            color: Colors.grey[600],
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildDetectionsList() {
+    return Card(
+      margin: const EdgeInsets.all(16),
+      elevation: 2,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'Detected Damages',
+              style: TextStyle(
+                fontSize: 20,
+                fontWeight: FontWeight.bold,
+                color: Colors.black87,
+              ),
+            ),
+            const SizedBox(height: 16),
+            ...report.detections.map((detection) => _buildDetectionItem(detection)),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildDetectionItem(DamageDetection detection) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 16),
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.grey[100],
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  detection.damageType,
+                  style: const TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+              _buildSeverityBadge(detection.severity),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Text('Confidence: ${(detection.confidence * 100).toStringAsFixed(1)}%'),
+          Text('Detected: ${_formatDate(detection.timestamp)}'),
+          if (detection.imagePath.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            ClipRRect(
+              borderRadius: BorderRadius.circular(8),
+              child: Image.file(
+                File(detection.imagePath),
+                height: 150,
+                width: double.infinity,
+                fit: BoxFit.cover,
+                errorBuilder: (context, error, stackTrace) {
+                  return Container(
+                    height: 150,
+                    color: Colors.grey[300],
+                    child: const Center(
+                      child: Icon(Icons.image_not_supported),
+                    ),
+                  );
+                },
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _buildRecommendationsCard() {
+    return Card(
+      margin: const EdgeInsets.all(16),
+      elevation: 2,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'Engineering Recommendations',
+              style: TextStyle(
+                fontSize: 20,
+                fontWeight: FontWeight.bold,
+                color: Colors.black87,
+              ),
+            ),
+            const SizedBox(height: 16),
+            ...report.detections.map((detection) => _buildRecommendationSection(detection)),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildRecommendationSection(DamageDetection detection) {
+    final recommendation = RecommendationsService.getRecommendation(detection.damageType);
+    if (recommendation == null) return const SizedBox();
+
+    return ExpansionTile(
+      title: Text(
+        '${detection.damageType} Repair Guide',
+        style: const TextStyle(fontWeight: FontWeight.w600),
+      ),
+      children: [
+        Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              _buildRecommendationItem('Urgency', recommendation.urgency, Colors.red),
+              _buildRecommendationItem('Estimated Cost', recommendation.estimatedCost, Colors.green),
+              _buildRecommendationItem('Time to Complete', recommendation.timeToComplete, Colors.blue),
+              _buildRecommendationItem('Skill Level', recommendation.skillLevel, Colors.orange),
+              
+              const SizedBox(height: 16),
+              const Text('Steps:', style: TextStyle(fontWeight: FontWeight.w600)),
+              ...recommendation.recommendations.map((rec) => Padding(
+                padding: const EdgeInsets.only(left: 16, top: 4),
+                child: Text('• $rec'),
+              )),
+              
+              const SizedBox(height: 16),
+              const Text('Materials Needed:', style: TextStyle(fontWeight: FontWeight.w600)),
+              ...recommendation.materials.map((material) => Padding(
+                padding: const EdgeInsets.only(left: 16, top: 4),
+                child: Text('• $material'),
+              )),
+              
+              const SizedBox(height: 16),
+              const Text('Safety Notes:', style: TextStyle(fontWeight: FontWeight.w600, color: Colors.red)),
+              ...recommendation.safetyNotes.map((note) => Padding(
+                padding: const EdgeInsets.only(left: 16, top: 4),
+                child: Text('⚠️ $note'),
+              )),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildRecommendationItem(String label, String value, Color color) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Row(
+        children: [
+          Text('$label: ', style: const TextStyle(fontWeight: FontWeight.w600)),
+          Text(value, style: TextStyle(color: color)),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildSeverityBadge(String severity) {
+    Color color;
+    switch (severity.toLowerCase()) {
+      case 'high':
+        color = Colors.red;
+        break;
+      case 'medium':
+        color = Colors.orange;
+        break;
+      default:
+        color = Colors.green;
+    }
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      decoration: BoxDecoration(
+        color: color.withOpacity(0.1),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Text(
+        severity,
+        style: TextStyle(
+          color: color,
+          fontWeight: FontWeight.w600,
+          fontSize: 12,
+        ),
+      ),
+    );
+  }
+
+  String _formatDate(DateTime date) {
+    return '${date.day}/${date.month}/${date.year} ${date.hour}:${date.minute.toString().padLeft(2, '0')}';
+  }
+
+  void _shareReport() {
+    // TODO: Implement report sharing functionality
+    // This could export to PDF, email, etc.
+  }
+}

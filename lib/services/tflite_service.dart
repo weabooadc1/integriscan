@@ -9,7 +9,7 @@ class TFLiteService {
   static bool _isInitialized = false;
 
   // Model configuration
-  static const String modelPath = 'assets/models/damage_detection.tflite';
+  static const String modelPath = 'assets/models/best_float16.tflite';
   static const String labelsPath = 'assets/models/labels.txt';
   static const int inputSize = 224; // Most common input size for mobile models
 
@@ -27,7 +27,7 @@ class TFLiteService {
         _labels = labelsData.split('\n').where((label) => label.isNotEmpty).toList();
       } catch (e) {
         print('Labels file not found, using default labels: $e');
-        _labels = ['No Damage', 'Crack', 'Rust', 'Corrosion', 'Dent'];
+        _labels = ['No Damage', 'Crack', 'Deformation', 'Rust', 'Scaling'];
       }
 
       _isInitialized = true;

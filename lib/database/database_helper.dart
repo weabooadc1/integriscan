@@ -19,12 +19,23 @@ class DatabaseHelper {
     final path = join(dbPath, 'app_database.db');
     return await openDatabase(
       path,
-      version: 1,
+      version: 2,
       onCreate: _onCreate,
+      onUpgrade: _onUpgrade,
     );
   }
 
   Future _onCreate(Database db, int version) async {
+    await _createTables(db);
+  }
+
+  Future _onUpgrade(Database db, int oldVersion, int newVersion) async {
+    if (oldVersion < 2) {
+      await _createReportTables(db);
+    }
+  }
+
+  Future _createTables(Database db) async {
     await db.execute('''
       CREATE TABLE users(
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -32,6 +43,37 @@ class DatabaseHelper {
         lastName TEXT,
         email TEXT UNIQUE,
         password TEXT
+      )
+    ''');
+    
+    await _createReportTables(db);
+  }
+
+  Future _createReportTables(Database db) async {
+    await db.execute('''
+      CREATE TABLE reports (
+        id TEXT PRIMARY KEY,
+        userId TEXT NOT NULL,
+        sessionName TEXT NOT NULL,
+        createdAt TEXT NOT NULL,
+        detectionsCount INTEGER NOT NULL,
+        severityLevel TEXT NOT NULL,
+        recommendations TEXT NOT NULL
+      )
+    ''');
+
+    await db.execute('''
+      CREATE TABLE detections (
+        id TEXT PRIMARY KEY,
+        reportId TEXT NOT NULL,
+        damageType TEXT NOT NULL,
+        confidence REAL NOT NULL,
+        imagePath TEXT NOT NULL,
+        timestamp TEXT NOT NULL,
+        boundingBox TEXT,
+        severity TEXT NOT NULL,
+        recommendations TEXT NOT NULL,
+        FOREIGN KEY (reportId) REFERENCES reports (id)
       )
     ''');
   }
@@ -51,6 +93,33 @@ class DatabaseHelper {
   Future<List<Map<String, dynamic>>> getUsers() async {
     final db = await database;
     return await db.query('users');
+  }
+
+  // Report methods
+  Future<int> insertReport(Map<String, dynamic> report) async {
+    final db = await database;
+    return await db.insert('reports', report);
+  }
+
+  Future<List<Map<String, dynamic>>> getReports() async {
+    final db = await database;
+    return await db.query('reports', orderBy: 'createdAt DESC');
+  }
+
+  Future<Map<String, dynamic>?> getReport(String id) async {
+    final db = await database;
+    final results = await db.query('reports', where: 'id = ?', whereArgs: [id]);
+    return results.isNotEmpty ? results.first : null;
+  }
+
+  Future<int> insertDetection(Map<String, dynamic> detection) async {
+    final db = await database;
+    return await db.insert('detections', detection);
+  }
+
+  Future<List<Map<String, dynamic>>> getDetectionsByReport(String reportId) async {
+    final db = await database;
+    return await db.query('detections', where: 'reportId = ?', whereArgs: [reportId]);
   }
 }
 

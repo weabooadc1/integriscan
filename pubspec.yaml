@@ -45,6 +45,7 @@ dependencies:
   flutter_vlc_player: ^7.4.3
   tflite_flutter: ^0.9.1 
   image: ^3.0.2
+  path_provider: ^2.1.1
 
 # Override camera and tflite_flutter to fix Android namespace build errors
 dependency_overrides:

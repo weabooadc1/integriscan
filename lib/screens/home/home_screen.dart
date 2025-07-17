@@ -4,6 +4,8 @@ import 'package:integriscan/providers/auth_provider.dart';
 import 'package:integriscan/screens/mock_local_users_screen.dart';
 import 'package:integriscan/screens/profile/profile_screen.dart';
 import 'package:integriscan/screens/rtsp/rtsp_stream_screen.dart';
+import 'package:integriscan/screens/reports/reports_list_screen.dart';
+import 'package:integriscan/utils/report_test_helper.dart';
 import 'package:provider/provider.dart';
 
 class HomeScreen extends StatelessWidget {
@@ -118,6 +120,30 @@ class HomeScreen extends StatelessWidget {
                       ),
                     ),
                     const SizedBox(height: 16),
+                    
+                    // Generate Sample Report Button (for testing)
+                    SizedBox(
+                      width: double.infinity,
+                      child: ElevatedButton(
+                        onPressed: () async {
+                          await ReportTestHelper.generateSampleReport();
+                          if (context.mounted) {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(
+                                content: Text('Sample report generated successfully!'),
+                                backgroundColor: Colors.green,
+                              ),
+                            );
+                          }
+                        },
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.orange,
+                          foregroundColor: Colors.white,
+                        ),
+                        child: const Text('Generate Sample Report'),
+                      ),
+                    ),
+                    const SizedBox(height: 16),
                     // Stats Card
                     Container(
                       width: double.infinity,
@@ -211,15 +237,15 @@ class HomeScreen extends StatelessWidget {
                                 Expanded(
                                   child: _buildModernActionCard(
                                     context,
-                                    title: 'View History',
+                                    title: 'View Reports',
                                     
-                                    icon: Icons.history,
+                                    icon: Icons.assignment,
                                     color: Colors.green,
                                     onTap: () {
-                                      ScaffoldMessenger.of(context).showSnackBar(
-                                        const SnackBar(
-                                          content: Text('View History functionality coming soon!'),
-                                          behavior: SnackBarBehavior.floating,
+                                      Navigator.push(
+                                        context,
+                                        MaterialPageRoute(
+                                          builder: (context) => const ReportsListScreen(),
                                         ),
                                       );
                                     },
