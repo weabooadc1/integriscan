@@ -1,3 +1,4 @@
+import 'dart:convert';
 class DetectionReport {
   final String id;
   final String userId;
@@ -27,14 +28,18 @@ class DetectionReport {
     };
   }
 
-  factory DetectionReport.fromMap(Map<String, dynamic> map) {
+  factory DetectionReport.fromMap(
+    Map<String, dynamic> map, {
+    List<DamageDetection>? detections,
+    ReportSummary? summary,
+  }) {
     return DetectionReport(
       id: map['id'],
       userId: map['userId'],
       sessionName: map['sessionName'],
       createdAt: DateTime.parse(map['createdAt']),
-      detections: [], // Will be loaded separately
-      summary: ReportSummary(
+      detections: detections ?? [],
+      summary: summary ?? ReportSummary(
         overallSeverity: map['severityLevel'],
         recommendations: map['recommendations'].split('|'),
         totalDetections: map['detectionsCount'],
@@ -84,6 +89,14 @@ class DamageDetection {
   }
 
   factory DamageDetection.fromMap(Map<String, dynamic> map) {
+    dynamic bbox = map['boundingBox'];
+    if (bbox != null && bbox is String && bbox.isNotEmpty) {
+      try {
+        bbox = jsonDecode(bbox);
+      } catch (_) {
+        bbox = null;
+      }
+    }
     return DamageDetection(
       id: map['id'],
       reportId: map['reportId'],
@@ -91,9 +104,7 @@ class DamageDetection {
       confidence: map['confidence'],
       imagePath: map['imagePath'],
       timestamp: DateTime.parse(map['timestamp']),
-      boundingBox: map['boundingBox'] != null 
-          ? BoundingBox.fromMap(map['boundingBox'])
-          : null,
+      boundingBox: bbox != null ? BoundingBox.fromMap(bbox) : null,
       severity: map['severity'],
       recommendations: map['recommendations'].split('|'),
     );

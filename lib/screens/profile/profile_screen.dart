@@ -17,15 +17,40 @@ class _ProfileScreenState extends State<ProfileScreen> {
   String? _lastName;
   String? _newPassword;
   bool _loading = false;
+  Map<String, dynamic>? _localUserProfile;
+  bool _profileLoading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadProfile();
+  }
+
+  Future<void> _loadProfile() async {
+    final authProvider = Provider.of<custom_auth.AuthProvider>(context, listen: false);
+    if (authProvider.userProfile != null) {
+      setState(() {
+        _localUserProfile = Map<String, dynamic>.from(authProvider.userProfile!);
+        _profileLoading = false;
+      });
+    } else {
+      await authProvider.fetchUserProfile();
+      setState(() {
+        _localUserProfile = Map<String, dynamic>.from(authProvider.userProfile ?? {});
+        _profileLoading = false;
+      });
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final authProvider = Provider.of<custom_auth.AuthProvider>(context);
-    final userProfile = authProvider.userProfile;
     final user = authProvider.user;
+    final userProfile = _localUserProfile;
     return Scaffold(
       backgroundColor: Colors.grey[50],
       body: SafeArea(
-        child: userProfile == null
+        child: _profileLoading || userProfile == null
             ? const Center(child: CircularProgressIndicator())
             : SingleChildScrollView(
                 physics: const BouncingScrollPhysics(),

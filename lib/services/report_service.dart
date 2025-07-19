@@ -112,23 +112,16 @@ class ReportService {
     for (final reportMap in reportMaps) {
       final detectionMaps = await db.getDetectionsByReport(reportMap['id']);
       final detections = detectionMaps.map((map) => DamageDetection.fromMap(map)).toList();
-      
-      final report = DetectionReport.fromMap(reportMap);
-      reports.add(DetectionReport(
-        id: report.id,
-        userId: report.userId,
-        sessionName: report.sessionName,
-        createdAt: report.createdAt,
-        detections: detections,
-        summary: ReportSummary(
-          overallSeverity: report.summary.overallSeverity,
-          recommendations: report.summary.recommendations,
-          totalDetections: detections.length,
-          criticalCount: detections.where((d) => d.severity == 'High').length,
-          moderateCount: detections.where((d) => d.severity == 'Medium').length,
-          minorCount: detections.where((d) => d.severity == 'Low').length,
-        ),
-      ));
+      // Build summary with correct counts
+      final summary = ReportSummary(
+        overallSeverity: reportMap['severityLevel'],
+        recommendations: (reportMap['recommendations'] ?? '').toString().split('|'),
+        totalDetections: detections.length,
+        criticalCount: detections.where((d) => d.severity == 'High').length,
+        moderateCount: detections.where((d) => d.severity == 'Medium').length,
+        minorCount: detections.where((d) => d.severity == 'Low').length,
+      );
+      reports.add(DetectionReport.fromMap(reportMap, detections: detections, summary: summary));
     }
     
     return reports;
@@ -143,21 +136,14 @@ class ReportService {
     final detectionMaps = await db.getDetectionsByReport(id);
     final detections = detectionMaps.map((map) => DamageDetection.fromMap(map)).toList();
     
-    final report = DetectionReport.fromMap(reportMap);
-    return DetectionReport(
-      id: report.id,
-      userId: report.userId,
-      sessionName: report.sessionName,
-      createdAt: report.createdAt,
-      detections: detections,
-      summary: ReportSummary(
-        overallSeverity: report.summary.overallSeverity,
-        recommendations: report.summary.recommendations,
-        totalDetections: detections.length,
-        criticalCount: detections.where((d) => d.severity == 'High').length,
-        moderateCount: detections.where((d) => d.severity == 'Medium').length,
-        minorCount: detections.where((d) => d.severity == 'Low').length,
-      ),
+    final summary = ReportSummary(
+      overallSeverity: reportMap['severityLevel'],
+      recommendations: (reportMap['recommendations'] ?? '').toString().split('|'),
+      totalDetections: detections.length,
+      criticalCount: detections.where((d) => d.severity == 'High').length,
+      moderateCount: detections.where((d) => d.severity == 'Medium').length,
+      minorCount: detections.where((d) => d.severity == 'Low').length,
     );
+    return DetectionReport.fromMap(reportMap, detections: detections, summary: summary);
   }
 }
