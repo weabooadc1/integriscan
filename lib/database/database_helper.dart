@@ -19,7 +19,7 @@ class DatabaseHelper {
     final path = join(dbPath, 'app_database.db');
     return await openDatabase(
       path,
-      version: 2,
+      version: 4,
       onCreate: _onCreate,
       onUpgrade: _onUpgrade,
     );
@@ -31,6 +31,26 @@ class DatabaseHelper {
 
   Future _onUpgrade(Database db, int oldVersion, int newVersion) async {
     if (oldVersion < 2) {
+      await _createReportTables(db);
+    }
+    if (oldVersion < 3) {
+      // Check if synced column already exists before adding it
+      try {
+        var result = await db.rawQuery("PRAGMA table_info(reports)");
+        bool syncedExists = result.any((column) => column['name'] == 'synced');
+        
+        if (!syncedExists) {
+          await db.execute('ALTER TABLE reports ADD COLUMN synced INTEGER NOT NULL DEFAULT 0');
+        }
+      } catch (e) {
+        // If there's an error checking, the column might already exist
+        print('Error checking/adding synced column: $e');
+      }
+    }
+    if (oldVersion < 4) {
+      // Recreate tables to ensure consistency (for development)
+      await db.execute('DROP TABLE IF EXISTS detections');
+      await db.execute('DROP TABLE IF EXISTS reports');
       await _createReportTables(db);
     }
   }
@@ -58,7 +78,8 @@ class DatabaseHelper {
         createdAt TEXT NOT NULL,
         detectionsCount INTEGER NOT NULL,
         severityLevel TEXT NOT NULL,
-        recommendations TEXT NOT NULL
+        recommendations TEXT NOT NULL,
+        synced INTEGER NOT NULL DEFAULT 0
       )
     ''');
 
@@ -101,8 +122,24 @@ class DatabaseHelper {
     return await db.insert('reports', report);
   }
 
-  Future<List<Map<String, dynamic>>> getReports() async {
+  Future<List<Map<String, dynamic>>> getUnsyncedReports({String? userId}) async {
     final db = await database;
+    if (userId != null) {
+      return await db.query('reports', where: 'synced = 0 AND userId = ?', whereArgs: [userId]);
+    }
+    return await db.query('reports', where: 'synced = 0');
+  }
+
+  Future<void> markReportAsSynced(String reportId) async {
+    final db = await database;
+    await db.update('reports', {'synced': 1}, where: 'id = ?', whereArgs: [reportId]);
+  }
+
+  Future<List<Map<String, dynamic>>> getReports({String? userId}) async {
+    final db = await database;
+    if (userId != null) {
+      return await db.query('reports', where: 'userId = ?', whereArgs: [userId], orderBy: 'createdAt DESC');
+    }
     return await db.query('reports', orderBy: 'createdAt DESC');
   }
 
@@ -120,6 +157,14 @@ class DatabaseHelper {
   Future<List<Map<String, dynamic>>> getDetectionsByReport(String reportId) async {
     final db = await database;
     return await db.query('detections', where: 'reportId = ?', whereArgs: [reportId]);
+  }
+
+  // Development helper method to reset database
+  Future<void> resetDatabase() async {
+    final dbPath = await getDatabasesPath();
+    final path = join(dbPath, 'app_database.db');
+    await deleteDatabase(path);
+    _database = null; // Force recreation on next access
   }
 }
 

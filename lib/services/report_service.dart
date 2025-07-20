@@ -1,24 +1,95 @@
 import 'package:integriscan/models/report_models.dart';
 import 'package:integriscan/services/recommendations_service.dart';
 import 'package:integriscan/database/database_helper.dart';
+import 'package:integriscan/services/firestore_sync_service.dart';
 
 class ReportService {
+  /// Static wrapper for background sync
+  static Future<void> syncAllUnsyncedReportsStatic({String? userId}) async {
+    await ReportService().syncAllUnsyncedReports(userId: userId);
+  }
+
+  /// Static wrapper for single report sync
+  static Future<void> trySyncReportToCloudStatic(DetectionReport report) async {
+    await ReportService().trySyncReportToCloud(report);
+  }
+  /// Try to sync a single report to Firestore and mark as synced if successful
+  Future<void> trySyncReportToCloud(DetectionReport report) async {
+    try {
+      print('Attempting to sync report ${report.id} to Firestore...');
+      
+      // Try to upload to Firestore
+      await FirestoreSyncService.uploadReport(report);
+      print('Report uploaded to Firestore successfully');
+      
+      // Mark as synced in local DB
+      final db = DatabaseHelper();
+      await db.markReportAsSynced(report.id);
+      print('Report marked as synced in local database');
+      
+    } catch (e) {
+      print('Firestore sync failed for report ${report.id}: $e');
+      // Don't rethrow - we want to continue with other reports
+    }
+  }
+
+  /// Background sync for all unsynced reports
+  Future<void> syncAllUnsyncedReports({String? userId}) async {
+    try {
+      print('Starting background sync for all unsynced reports...');
+      final db = DatabaseHelper();
+      final unsyncedMaps = await db.getUnsyncedReports(userId: userId);
+      print('Found ${unsyncedMaps.length} unsynced reports for userId: $userId');
+      
+      for (final map in unsyncedMaps) {
+        print('Syncing report: ${map['id']}');
+        final report = await getReport(map['id']);
+        if (report != null) {
+          await trySyncReportToCloud(report);
+        } else {
+          print('Warning: Could not retrieve report ${map['id']} for sync');
+        }
+      }
+      
+      print('Background sync completed');
+    } catch (e) {
+      print('Error during background sync: $e');
+    }
+  }
+
   static Future<DetectionReport> generateReport({
     required String userId,
     required String sessionName,
     required List<Map<String, dynamic>> detections,
+    bool trySyncToCloud = true,
   }) async {
+    print('ReportService.generateReport called with:');
+    print('  userId: $userId');
+    print('  sessionName: $sessionName');
+    print('  detections count: ${detections.length}');
+    print('  detections: $detections');
+    
     final reportId = DateTime.now().millisecondsSinceEpoch.toString();
     
     // Convert detections to DamageDetection objects
-    final damageDetections = detections.map((detection) {
+    print('Converting ${detections.length} detections to DamageDetection objects...');
+    final damageDetections = <DamageDetection>[];
+    
+    for (int i = 0; i < detections.length; i++) {
+      final detection = detections[i];
+      print('Processing detection $i: $detection');
+      
       final recommendations = RecommendationsService.getRecommendations(
         detection['damageType'],
         detection['confidence'],
       );
       
-      return DamageDetection(
-        id: DateTime.now().millisecondsSinceEpoch.toString(),
+      // Generate unique ID for each detection using report ID + index
+      final detectionId = '${reportId}_${i}';
+      print('Generated detection ID: $detectionId');
+      
+      damageDetections.add(DamageDetection(
+        id: detectionId,
         reportId: reportId,
         damageType: detection['damageType'],
         confidence: detection['confidence'],
@@ -32,13 +103,18 @@ class ReportService {
           detection['confidence'],
         ),
         recommendations: recommendations,
-      );
-    }).toList();
+      ));
+    }
+
+    print('Created ${damageDetections.length} DamageDetection objects');
 
     // Generate summary
+    print('Generating summary...');
     final summary = _generateSummary(damageDetections);
+    print('Summary generated: ${summary.toMap()}');
 
     // Create report
+    print('Creating DetectionReport object...');
     final report = DetectionReport(
       id: reportId,
       userId: userId,
@@ -46,12 +122,23 @@ class ReportService {
       createdAt: DateTime.now(),
       detections: damageDetections,
       summary: summary,
+      synced: false,
     );
+    print('DetectionReport created with ID: ${report.id}');
 
-    // Save to database
+    // Save to database (unsynced)
+    print('Saving report to database...');
     await _saveReportToDatabase(report);
+    print('Report saved to database successfully');
+
+    // Try to sync to Firestore if requested and connection is available
+    if (trySyncToCloud) {
+      // Use an instance to call non-static method
+      await ReportService().trySyncReportToCloud(report);
+    }
 
     return report;
+  /// Try to sync a single report to Firestore and mark as synced if successful
   }
 
   static ReportSummary _generateSummary(List<DamageDetection> detections) {
@@ -104,10 +191,9 @@ class ReportService {
     }
   }
 
-  static Future<List<DetectionReport>> getReports() async {
+  static Future<List<DetectionReport>> getReports({String? userId}) async {
     final db = DatabaseHelper();
-    final reportMaps = await db.getReports();
-    
+    final reportMaps = await db.getReports(userId: userId);
     List<DetectionReport> reports = [];
     for (final reportMap in reportMaps) {
       final detectionMaps = await db.getDetectionsByReport(reportMap['id']);
@@ -123,7 +209,6 @@ class ReportService {
       );
       reports.add(DetectionReport.fromMap(reportMap, detections: detections, summary: summary));
     }
-    
     return reports;
   }
 

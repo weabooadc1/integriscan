@@ -6,6 +6,7 @@ class DetectionReport {
   final DateTime createdAt;
   final List<DamageDetection> detections;
   final ReportSummary summary;
+  final bool synced;
 
   DetectionReport({
     required this.id,
@@ -14,6 +15,7 @@ class DetectionReport {
     required this.createdAt,
     required this.detections,
     required this.summary,
+    this.synced = false,
   });
 
   Map<String, dynamic> toMap() {
@@ -25,6 +27,7 @@ class DetectionReport {
       'detectionsCount': detections.length,
       'severityLevel': summary.overallSeverity,
       'recommendations': summary.recommendations.join('|'),
+      'synced': synced ? 1 : 0,
     };
   }
 
@@ -47,6 +50,7 @@ class DetectionReport {
         moderateCount: 0,
         minorCount: 0,
       ),
+      synced: (map['synced'] ?? 0) == 1,
     );
   }
 }

@@ -4,6 +4,7 @@ import 'package:integriscan/constant.dart';
 import 'package:integriscan/services/tflite_service.dart';
 import 'package:integriscan/services/frame_capture_service.dart';
 import 'package:integriscan/services/report_service.dart';
+import 'package:integriscan/services/firestore_sync_service.dart';
 import 'package:integriscan/providers/auth_provider.dart';
 import 'package:integriscan/screens/reports/report_detail_screen.dart';
 import 'package:provider/provider.dart';
@@ -27,8 +28,6 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> {
   bool _isLoading = true;
   bool _isAnalyzing = false;
   bool _analysisEnabled = false;
-  bool _useRealAnalysis = true; // Toggle between real and mock analysis
-  
   // TFLite Analysis
   Map<String, dynamic>? _lastAnalysisResult;
   int _totalFramesAnalyzed = 0;
@@ -43,6 +42,27 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> {
     super.initState();
     _initializeVLC();
     _initializeTFLite();
+    // Attempt background sync for all unsynced reports on screen load
+    _syncUnsyncedReportsForCurrentUser();
+  }
+
+  void _syncUnsyncedReportsForCurrentUser() async {
+    try {
+      final authProvider = Provider.of<AuthProvider>(context, listen: false);
+      final userId = authProvider.user?.uid ?? 'anonymous';
+      
+      // Test Firestore connection first
+      print('Testing Firestore connection...');
+      final connectionOk = await FirestoreSyncService.testConnection();
+      if (connectionOk) {
+        print('Firestore connection OK, proceeding with sync...');
+        await ReportService.syncAllUnsyncedReportsStatic(userId: userId);
+      } else {
+        print('Firestore connection failed, skipping sync');
+      }
+    } catch (e) {
+      print('Background sync error: $e');
+    }
   }
 
   void _initializeVLC() {
@@ -108,12 +128,7 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> {
         _isAnalyzing = true;
       });
 
-      // Choose between real and mock analysis
-      if (_useRealAnalysis) {
-        await _runRealTimeAnalysis();
-      } else {
-        await _runMockAnalysis();
-      }
+      await _runRealTimeAnalysis();
 
       setState(() {
         _isAnalyzing = false;
@@ -140,19 +155,13 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> {
         if (result != null && result['isDamageDetected'] != null) {
           await _processAnalysisResult(result, frameBytes);
         } else {
-          // If TFLite returns null or invalid result, fallback to mock
-          print('TFLite returned invalid result, falling back to mock analysis');
-          await _runMockAnalysis();
+          print('TFLite returned null or invalid result.');
         }
       } else {
-        // If frame capture fails, use mock analysis
-        print('Frame capture failed, using mock analysis');
-        await _runMockAnalysis();
+        print('Frame capture failed.');
       }
     } catch (e) {
       print('Real-time analysis error: $e');
-      // Fallback to mock analysis if real analysis fails
-      await _runMockAnalysis();
     }
   }
 
@@ -235,54 +244,7 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> {
     }
   }
 
-  Future<void> _runMockAnalysis() async {
-    // Mock analysis - fallback when real analysis fails
-    await Future.delayed(const Duration(milliseconds: 500));
-    
-    final random = DateTime.now().millisecondsSinceEpoch % 100;
-    final isDamage = random < 30; // 30% chance of detecting damage
-    
-    setState(() {
-      _totalFramesAnalyzed++;
-      if (isDamage) _damagesDetected++;
-      
-      // Update current detections with bounding box data
-      if (isDamage) {
-        final damageType = ['Crack', 'Deformation', 'Rust', 'Scaling'][random % 4];
-        final confidence = 0.7 + (random % 30) / 100;
-        final detection = {
-          'label': damageType,
-          'confidence': confidence,
-          'box': {
-            'x': 0.2 + (random % 40) / 100, // Normalized x (0-1)
-            'y': 0.2 + (random % 40) / 100, // Normalized y (0-1)
-            'width': 0.2 + (random % 20) / 100, // Normalized width
-            'height': 0.1 + (random % 20) / 100, // Normalized height
-          }
-        };
-        
-        _currentDetections = [detection];
-        
-        // Store in history for report generation
-        _detectionHistory.add({
-          'damageType': damageType,
-          'confidence': confidence,
-          'imagePath': '', // Would be populated with actual saved frame
-          'timestamp': DateTime.now().millisecondsSinceEpoch,
-          'boundingBox': detection['box'],
-        });
-      } else {
-        _currentDetections = [];
-      }
-      
-      _lastAnalysisResult = {
-        'isDamageDetected': isDamage,
-        'confidence': isDamage ? 0.7 + (random % 30) / 100 : 0.1 + (random % 40) / 100,
-        'damageType': isDamage ? ['Crack', 'Deformation', 'Rust', 'Scaling'][random % 4] : 'No Damage',
-        'timestamp': DateTime.now().millisecondsSinceEpoch,
-      };
-    });
-  }
+
 
   Future<void> _generateReport() async {
     print('Generate report called. Detection history size: ${_detectionHistory.length}');
@@ -308,7 +270,11 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> {
         userId: userId,
         sessionName: 'RTSP Stream Session ${DateTime.now().day}/${DateTime.now().month}/${DateTime.now().year}',
         detections: _detectionHistory,
+        trySyncToCloud: true,
       );
+
+      // Trigger background sync for all unsynced reports for this user
+      await ReportService.syncAllUnsyncedReportsStatic(userId: userId);
 
       print('Report generated successfully: ${report.id}');
 
@@ -334,32 +300,54 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> {
   }
 
   void _addTestDetection() {
+    print('_addTestDetection called');
     final random = DateTime.now().millisecondsSinceEpoch % 100;
     final damageTypes = ['Crack', 'Deformation', 'Rust', 'Scaling'];
     final damageType = damageTypes[random % 4];
     final confidence = 0.6 + (random % 40) / 100;
     
+    final detection = {
+      'damageType': damageType,
+      'confidence': confidence,
+      'imagePath': '', // Mock image path
+      'timestamp': DateTime.now().millisecondsSinceEpoch,
+      'boundingBox': {
+        'x': 0.2 + (random % 40) / 100,
+        'y': 0.2 + (random % 40) / 100,
+        'width': 0.2 + (random % 20) / 100,
+        'height': 0.1 + (random % 20) / 100,
+      },
+    };
+    
     setState(() {
-      _detectionHistory.add({
-        'damageType': damageType,
-        'confidence': confidence,
-        'imagePath': '', // Mock image path
-        'timestamp': DateTime.now().millisecondsSinceEpoch,
-        'boundingBox': {
-          'x': 0.2 + (random % 40) / 100,
-          'y': 0.2 + (random % 40) / 100,
-          'width': 0.2 + (random % 20) / 100,
-          'height': 0.1 + (random % 20) / 100,
-        },
-      });
-      
+      _detectionHistory.add(detection);
       _damagesDetected++;
     });
     
+    print('Detection history now has ${_detectionHistory.length} items');
+    print('Added detection: $detection');
+    
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
-        content: Text('Test detection added: $damageType (${(confidence * 100).toInt()}%)'),
+        content: Text('Test detection added: $damageType (${(confidence * 100).toInt()}%) - Total: ${_detectionHistory.length}'),
         backgroundColor: Colors.green,
+      ),
+    );
+  }
+
+  void _clearDetectionHistory() {
+    setState(() {
+      _detectionHistory.clear();
+      _damagesDetected = 0;
+    });
+    
+    print('Detection history cleared');
+    
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('Detection history cleared'),
+        backgroundColor: Colors.orange,
+        duration: Duration(seconds: 2),
       ),
     );
   }
@@ -369,6 +357,7 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> {
     _stopAnalysis();
     _vlcViewController.dispose();
     TFLiteService.dispose();
+    _detectionHistory.clear(); // Clear in-memory detection history on dispose (logout)
     super.dispose();
   }
 
@@ -680,14 +669,26 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> {
                       const SizedBox(height: 16),
                       
                       // Test Detection Button (for testing)
-                      SizedBox(
-                        width: double.infinity,
-                        child: _buildControlCard(
-                          title: 'Add Test Detection',
-                          icon: Icons.bug_report,
-                          color: Colors.indigo,
-                          onTap: _addTestDetection,
-                        ),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: _buildControlCard(
+                              title: 'Add Test Detection',
+                              icon: Icons.bug_report,
+                              color: Colors.indigo,
+                              onTap: _addTestDetection,
+                            ),
+                          ),
+                          const SizedBox(width: 16),
+                          Expanded(
+                            child: _buildControlCard(
+                              title: 'Clear History',
+                              icon: Icons.clear_all,
+                              color: Colors.orange,
+                              onTap: _clearDetectionHistory,
+                            ),
+                          ),
+                        ],
                       ),
                       
                       const SizedBox(height: 16),

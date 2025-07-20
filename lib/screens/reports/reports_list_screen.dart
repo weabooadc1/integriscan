@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:integriscan/models/report_models.dart';
 import 'package:integriscan/services/report_service.dart';
 import 'package:integriscan/screens/reports/report_detail_screen.dart';
+import 'package:integriscan/providers/auth_provider.dart';
+import 'package:provider/provider.dart';
 
 class ReportsListScreen extends StatefulWidget {
   const ReportsListScreen({super.key});
@@ -21,11 +23,21 @@ class _ReportsListScreenState extends State<ReportsListScreen> {
   }
 
   Future<void> _loadReports() async {
-    final reports = await ReportService.getReports();
-    setState(() {
-      _reports = reports;
-      _loading = false;
-    });
+    try {
+      final authProvider = Provider.of<AuthProvider>(context, listen: false);
+      final userId = authProvider.user?.uid ?? 'anonymous';
+      final reports = await ReportService.getReports(userId: userId);
+      setState(() {
+        _reports = reports;
+        _loading = false;
+      });
+    } catch (e) {
+      print('Error loading reports: $e');
+      setState(() {
+        _reports = [];
+        _loading = false;
+      });
+    }
   }
 
   @override
