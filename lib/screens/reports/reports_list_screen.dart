@@ -15,6 +15,8 @@ class ReportsListScreen extends StatefulWidget {
 class _ReportsListScreenState extends State<ReportsListScreen> {
   List<DetectionReport> _reports = [];
   bool _loading = true;
+  bool _selectionMode = false;
+  Set<String> _selectedReportIds = {};
 
   @override
   void initState() {
@@ -40,20 +42,184 @@ class _ReportsListScreenState extends State<ReportsListScreen> {
     }
   }
 
+  void _toggleSelectionMode() {
+    setState(() {
+      _selectionMode = !_selectionMode;
+      if (!_selectionMode) {
+        _selectedReportIds.clear();
+      }
+    });
+  }
+
+  void _toggleReportSelection(String reportId) {
+    setState(() {
+      if (_selectedReportIds.contains(reportId)) {
+        _selectedReportIds.remove(reportId);
+      } else {
+        _selectedReportIds.add(reportId);
+      }
+    });
+  }
+
+  Future<void> _deleteSelectedReports() async {
+    if (_selectedReportIds.isEmpty) return;
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (BuildContext context) {
+        return AlertDialog(
+          title: const Text('Delete Reports'),
+          content: Text(
+            'Are you sure you want to delete ${_selectedReportIds.length} selected report${_selectedReportIds.length > 1 ? 's' : ''}? This action cannot be undone.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(false),
+              child: const Text('Cancel'),
+            ),
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(true),
+              style: TextButton.styleFrom(foregroundColor: Colors.red),
+              child: const Text('Delete'),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (confirmed == true) {
+      try {
+        await ReportService.deleteReports(_selectedReportIds.toList());
+        
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('${_selectedReportIds.length} report${_selectedReportIds.length > 1 ? 's' : ''} deleted successfully'),
+              backgroundColor: Colors.green,
+            ),
+          );
+        }
+        
+        _toggleSelectionMode(); // Exit selection mode
+        await _loadReports(); // Refresh the list
+      } catch (e) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('Error deleting reports: $e'),
+              backgroundColor: Colors.red,
+            ),
+          );
+        }
+      }
+    }
+  }
+
+  Future<void> _deleteSingleReport(DetectionReport report) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (BuildContext context) {
+        return AlertDialog(
+          title: const Text('Delete Report'),
+          content: Text(
+            'Are you sure you want to delete "${report.sessionName}"? This action cannot be undone.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(false),
+              child: const Text('Cancel'),
+            ),
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(true),
+              style: TextButton.styleFrom(foregroundColor: Colors.red),
+              child: const Text('Delete'),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (confirmed == true) {
+      try {
+        await ReportService.deleteReport(report.id);
+        
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Report deleted successfully'),
+              backgroundColor: Colors.green,
+            ),
+          );
+        }
+        
+        await _loadReports(); // Refresh the list
+      } catch (e) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('Error deleting report: $e'),
+              backgroundColor: Colors.red,
+            ),
+          );
+        }
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: Colors.grey[50],
       appBar: AppBar(
-        title: const Text('Inspection Reports'),
+        title: _selectionMode 
+            ? Text('${_selectedReportIds.length} selected')
+            : const Text('Inspection Reports'),
         backgroundColor: Colors.white,
         foregroundColor: Colors.black87,
         elevation: 0,
+        leading: _selectionMode 
+            ? IconButton(
+                icon: const Icon(Icons.close),
+                onPressed: _toggleSelectionMode,
+              )
+            : null,
         actions: [
-          IconButton(
-            icon: const Icon(Icons.refresh),
-            onPressed: _loadReports,
-          ),
+          if (_selectionMode) ...[
+            if (_selectedReportIds.isNotEmpty)
+              IconButton(
+                icon: const Icon(Icons.delete, color: Colors.red),
+                onPressed: _deleteSelectedReports,
+                tooltip: 'Delete Selected',
+              ),
+            IconButton(
+              icon: Icon(_selectedReportIds.length == _reports.length 
+                  ? Icons.deselect 
+                  : Icons.select_all),
+              onPressed: () {
+                setState(() {
+                  if (_selectedReportIds.length == _reports.length) {
+                    _selectedReportIds.clear();
+                  } else {
+                    _selectedReportIds = _reports.map((r) => r.id).toSet();
+                  }
+                });
+              },
+              tooltip: _selectedReportIds.length == _reports.length 
+                  ? 'Deselect All' 
+                  : 'Select All',
+            ),
+          ] else ...[
+            if (_reports.isNotEmpty)
+              IconButton(
+                icon: const Icon(Icons.delete_outline),
+                onPressed: _toggleSelectionMode,
+                tooltip: 'Delete Reports',
+              ),
+            IconButton(
+              icon: const Icon(Icons.refresh),
+              onPressed: _loadReports,
+            ),
+          ],
         ],
       ),
       body: _loading
@@ -108,18 +274,29 @@ class _ReportsListScreenState extends State<ReportsListScreen> {
   }
 
   Widget _buildReportCard(DetectionReport report) {
+    final isSelected = _selectedReportIds.contains(report.id);
+    
     return Card(
       margin: const EdgeInsets.only(bottom: 16),
       elevation: 2,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      color: _selectionMode && isSelected ? Colors.blue.withOpacity(0.1) : null,
       child: InkWell(
         onTap: () {
-          Navigator.push(
-            context,
-            MaterialPageRoute(
-              builder: (context) => ReportDetailScreen(report: report),
-            ),
-          );
+          if (_selectionMode) {
+            _toggleReportSelection(report.id);
+          } else {
+            Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (context) => ReportDetailScreen(report: report),
+              ),
+            );
+          }
+        },
+        onLongPress: _selectionMode ? null : () {
+          _toggleSelectionMode();
+          _toggleReportSelection(report.id);
         },
         borderRadius: BorderRadius.circular(12),
         child: Padding(
@@ -130,6 +307,14 @@ class _ReportsListScreenState extends State<ReportsListScreen> {
               // Header
               Row(
                 children: [
+                  if (_selectionMode)
+                    Padding(
+                      padding: const EdgeInsets.only(right: 12),
+                      child: Checkbox(
+                        value: isSelected,
+                        onChanged: (value) => _toggleReportSelection(report.id),
+                      ),
+                    ),
                   Expanded(
                     child: Text(
                       report.sessionName,
@@ -140,6 +325,26 @@ class _ReportsListScreenState extends State<ReportsListScreen> {
                       ),
                     ),
                   ),
+                  if (!_selectionMode)
+                    PopupMenuButton<String>(
+                      onSelected: (value) {
+                        if (value == 'delete') {
+                          _deleteSingleReport(report);
+                        }
+                      },
+                      itemBuilder: (BuildContext context) => [
+                        const PopupMenuItem<String>(
+                          value: 'delete',
+                          child: Row(
+                            children: [
+                              Icon(Icons.delete, color: Colors.red, size: 20),
+                              SizedBox(width: 8),
+                              Text('Delete'),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
                   _buildSeverityBadge(report.summary.overallSeverity),
                 ],
               ),

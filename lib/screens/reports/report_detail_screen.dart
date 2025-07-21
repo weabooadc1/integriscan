@@ -1,12 +1,19 @@
 import 'package:flutter/material.dart';
 import 'package:integriscan/models/report_models.dart';
 import 'package:integriscan/services/recommendations_service.dart';
+import 'package:integriscan/component/primarybutton.dart';
+import 'package:integriscan/component/lightbutton.dart';
 import 'dart:io';
 
 class ReportDetailScreen extends StatelessWidget {
   final DetectionReport report;
+  final bool fromAnalysis; // New parameter to indicate if coming from analysis
 
-  const ReportDetailScreen({super.key, required this.report});
+  const ReportDetailScreen({
+    super.key, 
+    required this.report,
+    this.fromAnalysis = false, // Default to false for backward compatibility
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -32,6 +39,7 @@ class ReportDetailScreen extends StatelessWidget {
             _buildSummaryCard(),
             _buildDetectionsList(),
             _buildRecommendationsCard(),
+            _buildFinishButton(context),
           ],
         ),
       ),
@@ -340,5 +348,42 @@ class ReportDetailScreen extends StatelessWidget {
   void _shareReport() {
     // TODO: Implement report sharing functionality
     // This could export to PDF, email, etc.
+  }
+
+  Widget _buildFinishButton(BuildContext context) {
+    return Container(
+      margin: const EdgeInsets.all(16),
+      width: double.infinity,
+      child: Column(
+        children: [
+          if (fromAnalysis) ...[
+            // Show when coming from RTSP analysis - go to home
+            PrimaryButton(
+              text: "Finish & Go to Home",
+              press: () {
+                // Navigate to home screen and clear all previous routes
+                Navigator.of(context).pushNamedAndRemoveUntil(
+                  '/', // Home route
+                  (Route<dynamic> route) => false, // Remove all routes
+                );
+              },
+            ),
+            const SizedBox(height: 12),
+            // Secondary button to go back to analysis
+            LightButton(text: 'Back to analysis', press: () {
+                Navigator.of(context).pop(); // Just go back to analysis screen
+              },),
+          ] else ...[
+            // Show when viewing from reports list - just go back
+            PrimaryButton(
+              text: "Back to Reports",
+              press: () {
+                Navigator.of(context).pop(); // Go back to reports list
+              },
+            ),
+          ],
+        ],
+      ),
+    );
   }
 }

@@ -159,6 +159,37 @@ class DatabaseHelper {
     return await db.query('detections', where: 'reportId = ?', whereArgs: [reportId]);
   }
 
+  /// Delete a report and all its associated detections
+  Future<void> deleteReport(String reportId) async {
+    final db = await database;
+    
+    // Start a transaction to ensure both deletions succeed or fail together
+    await db.transaction((txn) async {
+      // Delete all detections associated with the report
+      await txn.delete('detections', where: 'reportId = ?', whereArgs: [reportId]);
+      
+      // Delete the report itself
+      await txn.delete('reports', where: 'id = ?', whereArgs: [reportId]);
+    });
+  }
+
+  /// Delete multiple reports and all their associated detections
+  Future<void> deleteReports(List<String> reportIds) async {
+    final db = await database;
+    
+    if (reportIds.isEmpty) return;
+    
+    await db.transaction((txn) async {
+      for (String reportId in reportIds) {
+        // Delete all detections associated with the report
+        await txn.delete('detections', where: 'reportId = ?', whereArgs: [reportId]);
+        
+        // Delete the report itself
+        await txn.delete('reports', where: 'id = ?', whereArgs: [reportId]);
+      }
+    });
+  }
+
   // Development helper method to reset database
   Future<void> resetDatabase() async {
     final dbPath = await getDatabasesPath();

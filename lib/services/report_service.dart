@@ -231,4 +231,68 @@ class ReportService {
     );
     return DetectionReport.fromMap(reportMap, detections: detections, summary: summary);
   }
+
+  /// Delete a report and all its associated detections
+  static Future<void> deleteReport(String reportId) async {
+    try {
+      print('Deleting report: $reportId');
+      final db = DatabaseHelper();
+      
+      // Delete from local database first
+      await db.deleteReport(reportId);
+      print('Report deleted from local database: $reportId');
+      
+      // Try to delete from Firestore if connected
+      try {
+        print('Attempting to delete from Firestore...');
+        final connectionOk = await FirestoreSyncService.testConnection();
+        if (connectionOk) {
+          await FirestoreSyncService.deleteReport(reportId);
+          print('Report deleted from Firestore successfully: $reportId');
+        } else {
+          print('Firestore connection failed - skipping cloud deletion');
+        }
+      } catch (e) {
+        print('Firestore deletion failed (report still deleted locally): $e');
+        // Don't rethrow - local deletion succeeded, cloud failure is non-critical
+      }
+      
+      print('Report deletion completed: $reportId');
+    } catch (e) {
+      print('Error deleting report: $e');
+      throw Exception('Failed to delete report: $e');
+    }
+  }
+
+  /// Delete multiple reports
+  static Future<void> deleteReports(List<String> reportIds) async {
+    try {
+      print('Deleting ${reportIds.length} reports: $reportIds');
+      final db = DatabaseHelper();
+      
+      // Delete from local database first
+      await db.deleteReports(reportIds);
+      print('Reports deleted from local database');
+      
+      // Try to delete from Firestore if connected
+      try {
+        print('Attempting to delete from Firestore...');
+        final connectionOk = await FirestoreSyncService.testConnection();
+        if (connectionOk) {
+          await FirestoreSyncService.deleteReports(reportIds);
+          print('Reports deleted from Firestore successfully');
+        } else {
+          print('Firestore connection failed - skipping cloud deletion');
+        }
+      } catch (e) {
+        print('Firestore deletion failed (reports still deleted locally): $e');
+        // Don't rethrow - local deletion succeeded, cloud failure is non-critical
+      }
+      
+      print('Reports deletion completed');
+    } catch (e) {
+      print('Error deleting reports: $e');
+      throw Exception('Failed to delete reports: $e');
+    }
+  }
 }

@@ -282,7 +282,10 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> {
         Navigator.push(
           context,
           MaterialPageRoute(
-            builder: (context) => ReportDetailScreen(report: report),
+            builder: (context) => ReportDetailScreen(
+              report: report,
+              fromAnalysis: true, // Indicate this came from analysis
+            ),
           ),
         );
       }
