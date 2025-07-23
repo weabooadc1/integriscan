@@ -61,12 +61,92 @@ class FirestoreSyncService {
       await _firestore.collection('test').doc('connectivity').set({
         'timestamp': DateTime.now().toIso8601String(),
         'test': true,
-      });
+      }).timeout(const Duration(seconds: 5));
       print('Firestore connection test successful');
       return true;
     } catch (e) {
       print('Firestore connection test failed: $e');
       return false;
+    }
+  }
+
+  /// Download all reports for a user from Firestore
+  static Future<List<Map<String, dynamic>>> downloadUserReports(String userId) async {
+    try {
+      print('Downloading reports for user: $userId');
+      
+      final querySnapshot = await _firestore
+          .collection('reports')
+          .where('userId', isEqualTo: userId)
+          .get()
+          .timeout(const Duration(seconds: 30));
+      
+      List<Map<String, dynamic>> reports = [];
+      
+      for (final doc in querySnapshot.docs) {
+        final reportData = doc.data();
+        
+        // Download detections for this report
+        final detectionsSnapshot = await doc.reference
+            .collection('detections')
+            .get()
+            .timeout(const Duration(seconds: 15));
+        
+        final detections = detectionsSnapshot.docs
+            .map((detectionDoc) => detectionDoc.data())
+            .toList();
+        
+        // Add detections to report data
+        reportData['detections'] = detections;
+        reports.add(reportData);
+        
+        print('Downloaded report ${reportData['id']} with ${detections.length} detections');
+      }
+      
+      print('Downloaded ${reports.length} reports from Firestore');
+      return reports;
+    } catch (e) {
+      print('Error downloading user reports: $e');
+      return [];
+    }
+  }
+
+  /// Download a specific report from Firestore
+  static Future<Map<String, dynamic>?> downloadReport(String reportId) async {
+    try {
+      print('Downloading report: $reportId');
+      
+      final docSnapshot = await _firestore
+          .collection('reports')
+          .doc(reportId)
+          .get()
+          .timeout(const Duration(seconds: 15));
+      
+      if (!docSnapshot.exists) {
+        print('Report not found in Firestore: $reportId');
+        return null;
+      }
+      
+      final reportData = docSnapshot.data()!;
+      
+      // Download detections for this report
+      final detectionsSnapshot = await docSnapshot.reference
+          .collection('detections')
+          .get()
+          .timeout(const Duration(seconds: 15));
+      
+      final detections = detectionsSnapshot.docs
+          .map((detectionDoc) => detectionDoc.data())
+          .toList();
+      
+      // Add detections to report data
+      reportData['detections'] = detections;
+      
+      print('Downloaded report $reportId with ${detections.length} detections');
+      return reportData;
+    } catch (e) {
+      print('Error downloading report $reportId: $e');
+      return null;
     }
   }
 
@@ -80,7 +160,8 @@ class FirestoreSyncService {
       // First, delete all detections in the subcollection
       print('Deleting detections subcollection...');
       final detectionsRef = reportRef.collection('detections');
-      final detectionsSnapshot = await detectionsRef.get();
+      final detectionsSnapshot = await detectionsRef.get()
+          .timeout(const Duration(seconds: 15));
       
       // Delete each detection document
       final batch = _firestore.batch();
@@ -94,18 +175,25 @@ class FirestoreSyncService {
       // Also clean up any related verification records
       print('Cleaning up verification records...');
       try {
-        // Delete from flagged_reports collection if exists
+        // Check if flagged report exists and delete it separately (not in batch)
+        // This ensures security rules can be properly evaluated
         final flaggedRef = _firestore.collection('flagged_reports').doc(reportId);
-        batch.delete(flaggedRef);
+        final flaggedDoc = await flaggedRef.get();
         
-        print('Added flagged report cleanup to batch');
+        if (flaggedDoc.exists) {
+          print('Flagged report exists, deleting separately...');
+          await flaggedRef.delete().timeout(const Duration(seconds: 10));
+          print('Flagged report deleted successfully');
+        } else {
+          print('No flagged report found for this report');
+        }
       } catch (e) {
         print('Warning: Could not clean up flagged report: $e');
         // Continue with report deletion even if flagged report cleanup fails
       }
       
-      // Commit all deletions
-      await batch.commit();
+      // Commit all deletions with timeout
+      await batch.commit().timeout(const Duration(seconds: 20));
       print('Report, detections, and flagged report deleted from Firestore successfully');
       
     } catch (e) {
@@ -128,7 +216,8 @@ class FirestoreSyncService {
         
         // Get and delete all detections in the subcollection
         final detectionsRef = reportRef.collection('detections');
-        final detectionsSnapshot = await detectionsRef.get();
+        final detectionsSnapshot = await detectionsRef.get()
+            .timeout(const Duration(seconds: 15));
         
         // Add each detection deletion to batch
         for (final detectionDoc in detectionsSnapshot.docs) {
@@ -138,20 +227,24 @@ class FirestoreSyncService {
         // Add report deletion to batch
         batch.delete(reportRef);
         
-        // Also clean up any related verification records
+        // Clean up flagged reports separately (not in batch to ensure security rules work)
         try {
-          // Delete from flagged_reports collection if exists
           final flaggedRef = _firestore.collection('flagged_reports').doc(reportId);
-          batch.delete(flaggedRef);
+          final flaggedDoc = await flaggedRef.get();
           
+          if (flaggedDoc.exists) {
+            print('Deleting flagged report for batch deletion: $reportId');
+            await flaggedRef.delete().timeout(const Duration(seconds: 10));
+            print('Flagged report deleted successfully: $reportId');
+          }
         } catch (e) {
           print('Warning: Could not clean up flagged report for $reportId: $e');
           // Continue with report deletion even if flagged report cleanup fails
         }
       }
       
-      // Commit all deletions
-      await batch.commit();
+      // Commit all deletions with timeout
+      await batch.commit().timeout(const Duration(seconds: 30));
       print('All reports, detections, and flagged reports deleted from Firestore successfully');
       
     } catch (e) {
@@ -249,19 +342,46 @@ class FirestoreSyncService {
     }
   }
   
-  /// Get all flagged reports from Firestore
-  static Future<List<Map<String, dynamic>>> downloadFlaggedReports() async {
+  /// Get flagged reports for a specific user from Firestore
+  static Future<List<Map<String, dynamic>>> downloadFlaggedReports([String? userId]) async {
     try {
       print('Downloading flagged reports from Firestore...');
       
-      final querySnapshot = await _firestore.collection('flagged_reports').get();
+      Query query = _firestore.collection('flagged_reports');
+      
+      // If userId is provided, filter to get flagged reports where the user is either
+      // the report owner or the one who flagged it
+      if (userId != null) {
+        // Note: Firestore doesn't support OR queries directly, so we'll get all and filter
+        // In production, you might want to create compound indexes or separate queries
+        print('Filtering flagged reports for user: $userId');
+      }
+      
+      final querySnapshot = await query.get().timeout(const Duration(seconds: 30));
       final flaggedReports = <Map<String, dynamic>>[];
       
       for (final doc in querySnapshot.docs) {
-        flaggedReports.add({
-          'id': doc.id,
-          ...doc.data(),
-        });
+        final data = doc.data() as Map<String, dynamic>;
+        
+        // Filter by userId if provided
+        if (userId != null) {
+          final reportUserId = data['userId'] as String?;
+          final flaggedByUserId = data['flaggedByUserId'] as String?;
+          
+          // Include if user owns the report or flagged it
+          if (reportUserId == userId || flaggedByUserId == userId) {
+            flaggedReports.add({
+              'id': doc.id,
+              ...data,
+            });
+          }
+        } else {
+          // Include all if no userId filter
+          flaggedReports.add({
+            'id': doc.id,
+            ...data,
+          });
+        }
       }
       
       print('Downloaded ${flaggedReports.length} flagged reports from Firestore');
@@ -284,7 +404,16 @@ class FirestoreSyncService {
         // In production, you might want separate methods for different user perspectives
       }
       
-      return query.snapshots().map((snapshot) {
+      return query.snapshots().handleError((error) {
+        print('Firestore stream error: $error');
+        // If it's a permission error, just return empty data instead of crashing
+        if (error.toString().contains('permission-denied') || 
+            error.toString().contains('PERMISSION_DENIED')) {
+          print('Permission denied in Firestore stream - user likely logged out');
+          return [];
+        }
+        throw error;
+      }).map((snapshot) {
         return snapshot.docs.map((doc) => {
           'id': doc.id,
           'reportId': doc.id, // For compatibility with existing UI code

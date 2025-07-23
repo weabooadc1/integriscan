@@ -2,6 +2,7 @@ import 'package:integriscan/models/report_models.dart';
 import 'package:integriscan/services/recommendations_service.dart';
 import 'package:integriscan/database/database_helper.dart';
 import 'package:integriscan/services/firestore_sync_service.dart';
+import 'package:integriscan/services/connectivity_service.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 
 class ReportService {
@@ -43,6 +44,20 @@ class ReportService {
     try {
       print('Attempting to sync report ${report.id} to Firestore...');
       
+      // Check connectivity first
+      final connectivityService = ConnectivityService();
+      if (!connectivityService.isConnected) {
+        print('No connectivity - skipping sync for report ${report.id}');
+        return;
+      }
+      
+      // Test Firebase connection
+      final connectionOk = await FirestoreSyncService.testConnection();
+      if (!connectionOk) {
+        print('Firebase connection test failed - skipping sync for report ${report.id}');
+        return;
+      }
+      
       // Try to upload to Firestore
       await FirestoreSyncService.uploadReport(report);
       print('Report uploaded to Firestore successfully');
@@ -62,9 +77,29 @@ class ReportService {
   Future<void> syncAllUnsyncedReports({String? userId}) async {
     try {
       print('Starting background sync for all unsynced reports...');
+      
+      // Check connectivity first
+      final connectivityService = ConnectivityService();
+      if (!connectivityService.isConnected) {
+        print('No connectivity - skipping background sync');
+        return;
+      }
+      
       final db = DatabaseHelper();
       final unsyncedMaps = await db.getUnsyncedReports(userId: userId);
       print('Found ${unsyncedMaps.length} unsynced reports for userId: $userId');
+      
+      if (unsyncedMaps.isEmpty) {
+        print('No unsynced reports found');
+        return;
+      }
+      
+      // Test Firebase connection before attempting to sync multiple reports
+      final connectionOk = await FirestoreSyncService.testConnection();
+      if (!connectionOk) {
+        print('Firebase connection test failed - skipping background sync');
+        return;
+      }
       
       for (final map in unsyncedMaps) {
         print('Syncing report: ${map['id']}');
@@ -79,6 +114,257 @@ class ReportService {
       print('Background sync completed');
     } catch (e) {
       print('Error during background sync: $e');
+    }
+  }
+
+  /// Download and sync reports from Firestore to local database
+  static Future<void> syncReportsFromCloud({String? userId}) async {
+    try {
+      print('Starting sync from Firestore to local database...');
+      
+      if (userId == null) {
+        print('No userId provided for sync from cloud');
+        return;
+      }
+      
+      // Check connectivity first
+      final connectivityService = ConnectivityService();
+      if (!connectivityService.isConnected) {
+        print('No connectivity - skipping sync from cloud');
+        return;
+      }
+      
+      // Test Firebase connection
+      final connectionOk = await FirestoreSyncService.testConnection();
+      if (!connectionOk) {
+        print('Firebase connection test failed - skipping sync from cloud');
+        return;
+      }
+      
+      // Download reports from Firestore
+      final cloudReports = await FirestoreSyncService.downloadUserReports(userId);
+      print('Downloaded ${cloudReports.length} reports from Firestore');
+      
+      final db = DatabaseHelper();
+      
+      // Get all local reports for this user
+      final localReports = await db.getReports(userId: userId);
+      print('Found ${localReports.length} local reports for user $userId');
+      
+      // Check for reports that exist locally but not in cloud (deleted reports)
+      final cloudReportIds = cloudReports.map((r) => r['id'] as String).toSet();
+      final localReportIds = localReports.map((r) => r['id'] as String).toSet();
+      final deletedReportIds = localReportIds.difference(cloudReportIds);
+      
+      if (deletedReportIds.isNotEmpty) {
+        print('Found ${deletedReportIds.length} reports deleted from cloud: $deletedReportIds');
+        // Delete these reports from local database
+        for (final deletedId in deletedReportIds) {
+          try {
+            print('Deleting local report that was removed from cloud: $deletedId');
+            await db.deleteReport(deletedId);
+          } catch (e) {
+            print('Error deleting local report $deletedId: $e');
+          }
+        }
+      }
+      
+      if (cloudReports.isEmpty && deletedReportIds.isEmpty) {
+        print('No reports found in Firestore for user $userId and no deletions needed');
+        return;
+      }
+      
+      int newReports = 0;
+      int updatedReports = 0;
+      
+      for (final cloudReport in cloudReports) {
+        try {
+          final reportId = cloudReport['id'] as String;
+          
+          // Check if report already exists locally
+          final existingReport = await db.getReport(reportId);
+          
+          if (existingReport == null) {
+            // New report - save to local database
+            print('Saving new report to local database: $reportId');
+            
+            // Extract detections
+            final detections = (cloudReport['detections'] as List<dynamic>? ?? [])
+                .map((d) => d as Map<String, dynamic>)
+                .toList();
+            
+            // Save report to local database
+            await db.insertReport({
+              'id': reportId,
+              'userId': cloudReport['userId'],
+              'sessionName': cloudReport['sessionName'] ?? 'Downloaded Report',
+              'createdAt': cloudReport['createdAt'],
+              'detectionsCount': detections.length, // Add the missing field
+              'severityLevel': cloudReport['severityLevel'] ?? 'Low',
+              'recommendations': (cloudReport['recommendations'] as List<dynamic>? ?? []).join('|'),
+              'synced': 1, // Mark as synced since it came from cloud
+            });
+            
+            // Save detections
+            for (final detection in detections) {
+              await db.insertDetection({
+                'id': detection['id'],
+                'reportId': reportId,
+                'damageType': detection['damageType'],
+                'confidence': detection['confidence'],
+                'imagePath': detection['imagePath'],
+                'timestamp': detection['timestamp'],
+                'boundingBox': detection['boundingBox']?.toString(),
+                'severity': detection['severity'],
+                'recommendations': (detection['recommendations'] as List<dynamic>? ?? []).join('|'),
+              });
+            }
+            
+            newReports++;
+            print('Successfully saved report $reportId with ${detections.length} detections');
+          } else {
+            // Report exists - potentially update if cloud version is newer
+            final cloudDate = DateTime.parse(cloudReport['createdAt'] as String);
+            final localDate = DateTime.parse(existingReport['createdAt'] as String);
+            
+            if (cloudDate.isAfter(localDate)) {
+              print('Cloud version is newer, updating local report: $reportId');
+              // Update logic here if needed
+              updatedReports++;
+            }
+          }
+        } catch (e) {
+          print('Error processing cloud report: $e');
+          continue;
+        }
+      }
+      
+      print('Sync from cloud completed: $newReports new, $updatedReports updated, ${deletedReportIds.length} deleted');
+      
+      // Also sync flagged reports
+      await syncFlaggedReportsFromCloud(userId: userId);
+      
+    } catch (e) {
+      print('Error during sync from cloud: $e');
+    }
+  }
+
+  /// Download and sync flagged reports from Firestore to local database
+  static Future<void> syncFlaggedReportsFromCloud({String? userId}) async {
+    try {
+      print('Starting flagged reports sync from Firestore to local database...');
+      
+      if (userId == null) {
+        print('No userId provided for flagged reports sync from cloud');
+        return;
+      }
+      
+      // Check connectivity first
+      final connectivityService = ConnectivityService();
+      if (!connectivityService.isConnected) {
+        print('No connectivity - skipping flagged reports sync from cloud');
+        return;
+      }
+      
+      // Test Firebase connection
+      final connectionOk = await FirestoreSyncService.testConnection();
+      if (!connectionOk) {
+        print('Firebase connection test failed - skipping flagged reports sync from cloud');
+        return;
+      }
+      
+      // Download flagged reports from Firestore
+      final flaggedReports = await FirestoreSyncService.downloadFlaggedReports(userId);
+      print('Downloaded ${flaggedReports.length} flagged reports from Firestore');
+      
+      final db = DatabaseHelper();
+      
+      // Get all local flagged reports for this user
+      final localFlaggedReports = await db.getReports(userId: userId);
+      final localFlaggedReportIds = localFlaggedReports
+          .where((r) => r['flaggedForVerification'] == 1)
+          .map((r) => r['id'] as String)
+          .toSet();
+      
+      // Get cloud flagged report IDs that involve this user
+      final cloudFlaggedReportIds = flaggedReports
+          .where((r) => 
+              (r['userId'] == userId || r['flaggedByUserId'] == userId))
+          .map((r) => r['id'] as String)
+          .toSet();
+      
+      // Check for flagged reports that exist locally but not in cloud (unflagged/deleted)
+      final unflaggedReportIds = localFlaggedReportIds.difference(cloudFlaggedReportIds);
+      
+      if (unflaggedReportIds.isNotEmpty) {
+        print('Found ${unflaggedReportIds.length} reports unflagged in cloud: $unflaggedReportIds');
+        // Reset flagged status for these reports
+        for (final unflaggedId in unflaggedReportIds) {
+          try {
+            print('Resetting flagged status for report: $unflaggedId');
+            await db.updateReportVerificationStatus(unflaggedId, {
+              'flaggedForVerification': 0,
+              'flaggedAt': null,
+              'verificationStatus': null,
+              'engineerComments': null,
+              'reviewedAt': null,
+            });
+          } catch (e) {
+            print('Error resetting flagged status for report $unflaggedId: $e');
+          }
+        }
+      }
+      
+      if (flaggedReports.isEmpty && unflaggedReportIds.isEmpty) {
+        print('No flagged reports found in Firestore and no unflagging needed');
+        return;
+      }
+      
+      int flaggedReportsUpdated = 0;
+      
+      for (final flaggedReport in flaggedReports) {
+        try {
+          final reportId = flaggedReport['id'] as String;
+          final reportUserId = flaggedReport['userId'] as String?;
+          final flaggedByUserId = flaggedReport['flaggedByUserId'] as String?;
+          
+          // Only process flagged reports that involve the current user
+          // (either they own the report or they flagged it)
+          if (reportUserId != userId && flaggedByUserId != userId) {
+            continue;
+          }
+          
+          print('Processing flagged report: $reportId');
+          
+          // Check if the base report exists locally
+          final existingReport = await db.getReport(reportId);
+          if (existingReport != null) {
+            // Update the report's flagged status and verification details
+            await db.updateReportVerificationStatus(reportId, {
+              'flaggedForVerification': 1,
+              'flaggedAt': flaggedReport['flaggedAt'],
+              'verificationStatus': flaggedReport['status'] ?? 'review',
+              'engineerComments': flaggedReport['engineerComments'],
+              'reviewedAt': flaggedReport['reviewedAt'],
+            });
+            
+            flaggedReportsUpdated++;
+            print('Updated flagged report: $reportId');
+          } else {
+            print('Base report not found locally for flagged report: $reportId');
+            // The base report might need to be downloaded first
+            // This could happen if a report was flagged on another device
+            // but the base report sync hasn't happened yet
+          }
+        } catch (e) {
+          print('Error processing flagged report: $e');
+          continue;
+        }
+      }
+      
+      print('Flagged reports sync completed: $flaggedReportsUpdated updated, ${unflaggedReportIds.length} unflagged');
+    } catch (e) {
+      print('Error during flagged reports sync from cloud: $e');
     }
   }
 
@@ -151,15 +437,18 @@ class ReportService {
     );
     print('DetectionReport created with ID: ${report.id}');
 
-    // Save to database (unsynced)
-    print('Saving report to database...');
+    // Save to database (always save locally first)
+    print('Saving report to local database...');
     await _saveReportToDatabase(report);
-    print('Report saved to database successfully');
+    print('Report saved to local database successfully');
 
     // Try to sync to Firestore if requested and connection is available
     if (trySyncToCloud) {
+      print('Attempting cloud sync...');
       // Use an instance to call non-static method
       await ReportService().trySyncReportToCloud(report);
+    } else {
+      print('Cloud sync skipped (offline mode)');
     }
 
     return report;
@@ -218,7 +507,18 @@ class ReportService {
 
   static Future<List<DetectionReport>> getReports({String? userId}) async {
     final db = DatabaseHelper();
-    final reportMaps = await db.getReports(userId: userId);
+    var reportMaps = await db.getReports(userId: userId);
+    
+    // If local database is empty and user is provided, try to sync from cloud
+    if (reportMaps.isEmpty && userId != null) {
+      print('Local reports empty for user $userId, attempting to sync from cloud...');
+      await syncReportsFromCloud(userId: userId);
+      
+      // Retry getting reports after sync
+      reportMaps = await db.getReports(userId: userId);
+      print('After cloud sync, found ${reportMaps.length} reports locally');
+    }
+    
     List<DetectionReport> reports = [];
     for (final reportMap in reportMaps) {
       final detectionMaps = await db.getDetectionsByReport(reportMap['id']);
@@ -267,18 +567,23 @@ class ReportService {
       await db.deleteReport(reportId);
       print('Report deleted from local database: $reportId');
       
-      // Try to delete from Firestore if connected
+      // Always try to delete from Firestore (let Firestore handle connectivity)
       try {
-        print('Attempting to delete from Firestore...');
-        final connectionOk = await FirestoreSyncService.testConnection();
-        if (connectionOk) {
-          await FirestoreSyncService.deleteReport(reportId);
-          print('Report deleted from Firestore successfully: $reportId');
-        } else {
-          print('Firestore connection failed - skipping cloud deletion');
-        }
+        print('Attempting Firestore deletion...');
+        await FirestoreSyncService.deleteReport(reportId)
+            .timeout(const Duration(seconds: 30));
+        print('Report deleted from Firestore successfully: $reportId');
       } catch (e) {
-        print('Firestore deletion failed (report still deleted locally): $e');
+        print('Firestore deletion failed for report $reportId: $e');
+        if (e.toString().contains('timeout') || e.toString().contains('TimeoutException')) {
+          print('Deletion timed out - network may be slow or unstable');
+        } else if (e.toString().contains('permission') || e.toString().contains('PERMISSION_DENIED')) {
+          print('Permission denied - user may not be authenticated');
+        } else if (e.toString().contains('network') || e.toString().contains('unavailable')) {
+          print('Network unavailable - skipping cloud deletion');
+        } else {
+          print('Other Firestore error: $e');
+        }
         // Don't rethrow - local deletion succeeded, cloud failure is non-critical
       }
       
@@ -299,18 +604,23 @@ class ReportService {
       await db.deleteReports(reportIds);
       print('Reports deleted from local database');
       
-      // Try to delete from Firestore if connected
+      // Always try to delete from Firestore (let Firestore handle connectivity)
       try {
-        print('Attempting to delete from Firestore...');
-        final connectionOk = await FirestoreSyncService.testConnection();
-        if (connectionOk) {
-          await FirestoreSyncService.deleteReports(reportIds);
-          print('Reports deleted from Firestore successfully');
-        } else {
-          print('Firestore connection failed - skipping cloud deletion');
-        }
+        print('Attempting bulk Firestore deletion...');
+        await FirestoreSyncService.deleteReports(reportIds)
+            .timeout(const Duration(seconds: 60)); // Longer timeout for multiple deletes
+        print('All ${reportIds.length} reports deleted from Firestore successfully');
       } catch (e) {
-        print('Firestore deletion failed (reports still deleted locally): $e');
+        print('Firestore bulk deletion failed for ${reportIds.length} reports: $e');
+        if (e.toString().contains('timeout') || e.toString().contains('TimeoutException')) {
+          print('Bulk deletion timed out - network may be slow or too many reports');
+        } else if (e.toString().contains('permission') || e.toString().contains('PERMISSION_DENIED')) {
+          print('Permission denied - user may not be authenticated');
+        } else if (e.toString().contains('network') || e.toString().contains('unavailable')) {
+          print('Network unavailable - skipping cloud deletion');
+        } else {
+          print('Other Firestore error: $e');
+        }
         // Don't rethrow - local deletion succeeded, cloud failure is non-critical
       }
       

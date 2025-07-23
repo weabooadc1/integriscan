@@ -235,6 +235,12 @@ class _MyFlaggedReportsScreenState extends State<MyFlaggedReportsScreen> with Si
 
   Stream<List<DetectionReport>> _getFlaggedReportsStream() async* {
     try {
+      // Check if user is still authenticated
+      if (_currentUserId == null) {
+        yield [];
+        return;
+      }
+
       // Get initial reports from local database and filter for flagged ones
       var allReports = await ReportService.getReports(userId: _currentUserId);
       var flaggedReports = allReports.where((report) => 
@@ -302,11 +308,22 @@ class _MyFlaggedReportsScreenState extends State<MyFlaggedReportsScreen> with Si
           }
         } catch (e) {
           print('Error processing Firestore flagged report updates: $e');
-          // Continue with existing data on error
+          // Check if it's a permission error (user logged out)
+          if (e.toString().contains('permission-denied') || e.toString().contains('PERMISSION_DENIED')) {
+            print('Permission denied - user likely logged out, stopping stream');
+            return;
+          }
+          // Continue with existing data on other errors
         }
       }
     } catch (e) {
       print('Error in flagged reports stream: $e');
+      // Check if it's a permission error and handle gracefully
+      if (e.toString().contains('permission-denied') || e.toString().contains('PERMISSION_DENIED')) {
+        print('Permission denied - user not authenticated, returning empty list');
+        yield [];
+        return;
+      }
       throw e;
     }
   }

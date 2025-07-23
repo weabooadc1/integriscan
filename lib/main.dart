@@ -7,6 +7,8 @@ import 'package:integriscan/providers/auth_provider.dart';
 import 'package:integriscan/screens/home/home_screen.dart';
 import 'package:integriscan/utils/logger.dart';
 import 'package:integriscan/database/database_helper.dart';
+import 'package:integriscan/services/connectivity_service.dart';
+import 'package:integriscan/services/report_service.dart';
 import 'firebase_options.dart';
 
 
@@ -19,6 +21,20 @@ Future<void> main() async {
   // Run database migration for verification status terminology
   final dbHelper = DatabaseHelper();
   await dbHelper.migrateVerificationStatusTerminology();
+  
+  // Initialize connectivity service
+  final connectivityService = ConnectivityService();
+  await connectivityService.initialize();
+  
+  // Set up background sync when connectivity is restored
+  connectivityService.setConnectivityRestoredCallback(() async {
+    try {
+      await ReportService.syncAllUnsyncedReportsStatic();
+      Logger.info('Background sync completed after connectivity restoration');
+    } catch (e) {
+      Logger.error('Error during background sync', e);
+    }
+  });
   
   runApp(const IndexPage());
 }

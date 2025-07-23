@@ -4,6 +4,10 @@ service cloud.firestore {
     // Allow authenticated users to read/write their own user document
     match /users/{userId} {
       allow read, write: if request.auth != null && request.auth.uid == userId;
+      // Allow reading other users' basic info for engineer verification (role checking)
+      allow read: if request.auth != null && 
+        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['engineer', 'admin'];
     }
     
     // Allow connection testing for authenticated users
@@ -11,35 +15,50 @@ service cloud.firestore {
       allow read, write: if request.auth != null;
     }
     
-    // Allow authenticated users to read/write their own reports
+    // Enhanced rules for reports collection
     match /reports/{reportId} {
+      // Allow authenticated users to read/write their own reports
       allow read, write: if request.auth != null && 
         request.auth.uid == resource.data.userId;
-    }
-    
-    // Allow authenticated users to create new reports
-    match /reports/{reportId} {
+      // Allow creating new reports
       allow create: if request.auth != null && 
         request.auth.uid == request.resource.data.userId;
+      // Allow engineers to read any report for verification purposes
+      allow read: if request.auth != null && 
+        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['engineer', 'admin'];
     }
     
-    // Allow authenticated users to read/write detections for their own reports
+    // Enhanced rules for detections subcollection
     match /reports/{reportId}/detections/{detectionId} {
+      // Allow authenticated users to read/write detections for their own reports
       allow read, write: if request.auth != null && 
         request.auth.uid == get(/databases/$(database)/documents/reports/$(reportId)).data.userId;
+      // Allow engineers to read any detections for verification
+      allow read: if request.auth != null && 
+        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['engineer', 'admin'];
     }
     
-    // Allow authenticated users to read/write their own flagged reports
+    // Enhanced rules for flagged reports
     match /flagged_reports/{reportId} {
+      // Everyone can read flagged reports (needed for engineer dashboard)
       allow read: if request.auth != null;
+      // Only authenticated users can create flagged reports
       allow create: if request.auth != null && 
         request.auth.uid == request.resource.data.flaggedByUserId;
+      // Allow report owners and engineers to update flagged reports
       allow write: if request.auth != null && 
         (request.auth.uid == resource.data.flaggedByUserId || 
-         request.auth.uid == resource.data.userId);
+         request.auth.uid == resource.data.userId ||
+         (exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+          get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['engineer', 'admin']));
+      // Allow deletion by report owner, flagger, or engineers
       allow delete: if request.auth != null && 
         (request.auth.uid == resource.data.flaggedByUserId || 
-         request.auth.uid == resource.data.userId);
+         request.auth.uid == resource.data.userId ||
+         (exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+          get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['engineer', 'admin']));
     }
   }
 }

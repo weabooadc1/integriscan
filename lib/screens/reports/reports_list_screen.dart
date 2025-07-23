@@ -4,6 +4,7 @@ import 'package:integriscan/services/report_service.dart';
 import 'package:integriscan/screens/reports/report_detail_screen.dart';
 import 'package:integriscan/screens/verification/flag_report_screen.dart';
 import 'package:integriscan/providers/auth_provider.dart';
+import 'package:integriscan/widgets/connectivity_indicator.dart';
 import 'package:provider/provider.dart';
 
 class ReportsListScreen extends StatefulWidget {
@@ -17,6 +18,7 @@ class _ReportsListScreenState extends State<ReportsListScreen> {
   List<DetectionReport> _reports = [];
   bool _loading = true;
   bool _selectionMode = false;
+  bool _syncing = false;
   Set<String> _selectedReportIds = {};
 
   @override
@@ -40,6 +42,64 @@ class _ReportsListScreenState extends State<ReportsListScreen> {
         _reports = [];
         _loading = false;
       });
+    }
+  }
+
+  Future<void> _syncWithCloud() async {
+    if (_syncing) return; // Prevent multiple concurrent syncs
+    
+    setState(() {
+      _syncing = true;
+    });
+
+    try {
+      final authProvider = Provider.of<AuthProvider>(context, listen: false);
+      final userId = authProvider.user?.uid;
+
+      if (userId == null) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Please log in to sync with cloud'),
+              backgroundColor: Colors.orange,
+            ),
+          );
+        }
+        return;
+      }
+
+      // Sync reports from cloud to local database
+      await ReportService.syncReportsFromCloud(userId: userId);
+      
+      // Reload reports to show the updated data
+      await _loadReports();
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Successfully synced with cloud'),
+            backgroundColor: Colors.green,
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+    } catch (e) {
+      print('Error syncing with cloud: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Sync failed: ${e.toString()}'),
+            backgroundColor: Colors.red,
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _syncing = false;
+        });
+      }
     }
   }
 
@@ -188,7 +248,7 @@ class _ReportsListScreenState extends State<ReportsListScreen> {
       appBar: AppBar(
         title: _selectionMode 
             ? Text('${_selectedReportIds.length} selected')
-            : const Text('Inspection Reports'),
+            : const Text('History'),
         backgroundColor: Colors.white,
         foregroundColor: Colors.black87,
         elevation: 0,
@@ -235,13 +295,38 @@ class _ReportsListScreenState extends State<ReportsListScreen> {
               onPressed: _loadReports,
             ),
           ],
+          if (!_selectionMode) ...[
+            // Sync button
+            IconButton(
+              icon: _syncing 
+                  ? const SizedBox(
+                      width: 20,
+                      height: 20,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        valueColor: AlwaysStoppedAnimation<Color>(Colors.blue),
+                      ),
+                    )
+                  : const Icon(Icons.cloud_sync),
+              onPressed: _syncing ? null : _syncWithCloud,
+              tooltip: _syncing ? 'Syncing...' : 'Sync with Cloud',
+            ),
+            // Add connectivity chip to actions when not in selection mode
+            const Padding(
+              padding: EdgeInsets.only(right: 8.0),
+              child: Center(child: ConnectivityStatusChip()),
+            ),
+          ],
         ],
       ),
-      body: _loading
-          ? const Center(child: CircularProgressIndicator())
-          : _reports.isEmpty
-              ? _buildEmptyState()
-              : _buildReportsList(),
+      body: ConnectivityIndicator(
+        showOnlineIndicator: false,
+        child: _loading
+            ? const Center(child: CircularProgressIndicator())
+            : _reports.isEmpty
+                ? _buildEmptyState()
+                : _buildReportsList(),
+      ),
     );
   }
 
@@ -270,6 +355,35 @@ class _ReportsListScreenState extends State<ReportsListScreen> {
             style: TextStyle(
               fontSize: 14,
               color: Colors.grey[600],
+            ),
+          ),
+          const SizedBox(height: 16),
+          Text(
+            'Or sync with cloud to see reports from other devices',
+            style: TextStyle(
+              fontSize: 12,
+              color: Colors.grey[500],
+              fontStyle: FontStyle.italic,
+            ),
+          ),
+          const SizedBox(height: 20),
+          ElevatedButton.icon(
+            onPressed: _syncing ? null : _syncWithCloud,
+            icon: _syncing 
+                ? const SizedBox(
+                    width: 16,
+                    height: 16,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+                    ),
+                  )
+                : const Icon(Icons.cloud_sync, size: 18),
+            label: Text(_syncing ? 'Syncing...' : 'Sync with Cloud'),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.blue,
+              foregroundColor: Colors.white,
+              padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
             ),
           ),
         ],

@@ -270,15 +270,31 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> {
         userId: userId,
         sessionName: 'RTSP Stream Session ${DateTime.now().day}/${DateTime.now().month}/${DateTime.now().year}',
         detections: _detectionHistory,
-        trySyncToCloud: true,
+        trySyncToCloud: true, // This will attempt sync but won't fail if offline
       );
-
-      // Trigger background sync for all unsynced reports for this user
-      await ReportService.syncAllUnsyncedReportsStatic(userId: userId);
 
       print('Report generated successfully: ${report.id}');
 
       if (mounted) {
+        // Show success message
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              report.synced 
+                ? 'Report generated and synced to cloud successfully!' 
+                : 'Report generated and saved locally! Will sync when connection is available.',
+            ),
+            backgroundColor: Colors.green,
+            duration: const Duration(seconds: 4),
+          ),
+        );
+
+        // Trigger background sync for all unsynced reports for this user (non-blocking)
+        ReportService.syncAllUnsyncedReportsStatic(userId: userId).catchError((e) {
+          print('Background sync error: $e');
+          // Don't show error to user - this is background operation
+        });
+
         Navigator.push(
           context,
           MaterialPageRoute(
