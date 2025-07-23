@@ -4,10 +4,13 @@ import 'package:integriscan/providers/auth_provider.dart';
 import 'package:integriscan/screens/profile/profile_screen.dart';
 import 'package:integriscan/screens/rtsp/rtsp_stream_screen.dart';
 import 'package:integriscan/screens/reports/reports_list_screen.dart';
+import 'package:integriscan/screens/verification/my_flagged_reports_screen.dart';
 import 'package:provider/provider.dart';
 
 class HomeScreen extends StatelessWidget {
-  const HomeScreen({super.key});  @override
+  const HomeScreen({super.key});
+  
+  @override
   Widget build(BuildContext context) {
     final authProvider = Provider.of<AuthProvider>(context);
     final user = authProvider.user;
@@ -234,10 +237,30 @@ class HomeScreen extends StatelessWidget {
                                 Expanded(
                                   child: _buildModernActionCard(
                                     context,
-                                    title: 'Help',
-                                    
-                                    icon: Icons.help_outline,
+                                    title: 'My Verification Status',
+                                    icon: Icons.verified_user,
                                     color: Colors.purple,
+                                    onTap: () {
+                                      Navigator.push(
+                                        context,
+                                        MaterialPageRoute(
+                                          builder: (context) => const MyFlaggedReportsScreen(),
+                                        ),
+                                      );
+                                    },
+                                  ),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 16),
+                            Row(
+                              children: [
+                                Expanded(
+                                  child: _buildModernActionCard(
+                                    context,
+                                    title: 'Help',
+                                    icon: Icons.help_outline,
+                                    color: Colors.teal,
                                     onTap: () {
                                       ScaffoldMessenger.of(context).showSnackBar(
                                         const SnackBar(
@@ -248,6 +271,8 @@ class HomeScreen extends StatelessWidget {
                                     },
                                   ),
                                 ),
+                                const SizedBox(width: 16),
+                                const Expanded(child: SizedBox()), // Empty space for symmetry
                               ],
                             ),
                           ],

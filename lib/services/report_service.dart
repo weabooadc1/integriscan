@@ -2,8 +2,33 @@ import 'package:integriscan/models/report_models.dart';
 import 'package:integriscan/services/recommendations_service.dart';
 import 'package:integriscan/database/database_helper.dart';
 import 'package:integriscan/services/firestore_sync_service.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 
 class ReportService {
+  /// Check if a user has engineer privileges
+  static Future<bool> isUserEngineer(String userId) async {
+    try {
+      // Check in Firestore users collection for engineer role
+      final userDoc = await FirebaseFirestore.instance
+          .collection('users')
+          .doc(userId)
+          .get();
+      
+      if (userDoc.exists) {
+        final userData = userDoc.data();
+        final role = userData?['role'] ?? 'user';
+        return role == 'engineer' || role == 'admin';
+      }
+      
+      // If user document doesn't exist, default to false
+      return false;
+    } catch (e) {
+      print('Error checking engineer privileges: $e');
+      // In case of error, default to false for security
+      return false;
+    }
+  }
+
   /// Static wrapper for background sync
   static Future<void> syncAllUnsyncedReportsStatic({String? userId}) async {
     await ReportService().syncAllUnsyncedReports(userId: userId);
@@ -295,4 +320,234 @@ class ReportService {
       throw Exception('Failed to delete reports: $e');
     }
   }
-}
+
+  /// Engineer Verification Methods
+  
+  /// Flag a report for engineer verification
+  Future<void> flagReportForVerification(String reportId, String userId, {String? comments}) async {
+    try {
+      final db = DatabaseHelper();
+      final now = DateTime.now().toIso8601String();
+      
+      // Update the report with verification flag
+      await db.updateReportVerificationStatus(reportId, {
+        'flaggedForVerification': 1,
+        'flaggedAt': now,
+        'verificationStatus': 'review',
+        'engineerComments': comments,
+      });
+      
+      // Create engineer verification record (for local tracking)
+      final report = await getReport(reportId);
+      if (report != null) {
+        final verification = EngineerVerification(
+          id: DateTime.now().millisecondsSinceEpoch.toString(),
+          originalReportId: reportId,
+          userId: userId,
+          flaggedAt: DateTime.now(),
+          reportSnapshot: report.toMap(),
+          status: 'review',
+          engineerComments: comments,
+        );
+        
+        await db.insertEngineerVerification(verification.toMap());
+        
+        // Send to dedicated flagged_reports Firestore collection
+        try {
+          await FirestoreSyncService.uploadFlaggedReport(report, userId, comments);
+          print('Report successfully sent to flagged_reports collection in Firestore');
+        } catch (e) {
+          print('Failed to sync flagged report to Firestore: $e');
+          // Still continue with local storage even if Firestore sync fails
+        }
+      }
+      
+      print('Report $reportId flagged for engineer verification and sent to Firestore flagged_reports collection');
+    } catch (e) {
+      print('Error flagging report for verification: $e');
+      throw Exception('Failed to flag report for verification: $e');
+    }
+  }
+  
+  /// Unflag a report from engineer verification
+  Future<void> unflagReportFromVerification(String reportId) async {
+    try {
+      final db = DatabaseHelper();
+      
+      // Update the report to remove verification flag
+      await db.updateReportVerificationStatus(reportId, {
+        'flaggedForVerification': 0,
+        'flaggedAt': null,
+        'verificationStatus': 'none',
+        'engineerComments': null,
+        'reviewedAt': null,
+      });
+      
+      // Remove engineer verification record
+      final verification = await db.getEngineerVerificationByReportId(reportId);
+      if (verification != null) {
+        await db.deleteEngineerVerification(verification['id']);
+        
+        // Try to delete from both Firestore collections
+        try {
+          await FirestoreSyncService.deleteFlaggedReport(reportId);
+          print('Report removed from flagged_reports collection');
+        } catch (e) {
+          print('Failed to delete flagged report from Firestore: $e');
+        }
+      }
+      
+      print('Report $reportId unflagged from engineer verification');
+    } catch (e) {
+      print('Error unflagging report from verification: $e');
+      throw Exception('Failed to unflag report from verification: $e');
+    }
+  }
+  
+  /// Approve a report by an engineer (Engineers only)
+  Future<void> approveReport(String reportId, String engineerUserId, String comments) async {
+    try {
+      // Check if user has engineer privileges
+      final isEngineer = await ReportService.isUserEngineer(engineerUserId);
+      if (!isEngineer) {
+        throw Exception('Access denied: Only engineers can approve reports. Regular users cannot approve their own flagged reports.');
+      }
+      
+      await _updateVerificationStatus(reportId, 'clear', engineerUserId, comments);
+      
+      // Update status in Firestore flagged_reports collection
+      try {
+        await FirestoreSyncService.updateFlaggedReportStatus(reportId, 'clear', engineerUserId, comments);
+        print('Flagged report status updated to clear in Firestore');
+      } catch (e) {
+        print('Failed to update flagged report status in Firestore: $e');
+      }
+      
+      print('Report $reportId cleared by engineer $engineerUserId');
+    } catch (e) {
+      print('Error approving report: $e');
+      throw Exception('Failed to approve report: $e');
+    }
+  }
+  
+  /// Reject a report by an engineer (Engineers only)
+  Future<void> rejectReport(String reportId, String engineerUserId, String comments) async {
+    try {
+      // Check if user has engineer privileges
+      final isEngineer = await ReportService.isUserEngineer(engineerUserId);
+      if (!isEngineer) {
+        throw Exception('Access denied: Only engineers can reject reports. Regular users cannot reject their own flagged reports.');
+      }
+      
+      await _updateVerificationStatus(reportId, 'issues', engineerUserId, comments);
+      
+      // Update status in Firestore flagged_reports collection
+      try {
+        await FirestoreSyncService.updateFlaggedReportStatus(reportId, 'issues', engineerUserId, comments);
+        print('Flagged report status updated to issues in Firestore');
+      } catch (e) {
+        print('Failed to update flagged report status in Firestore: $e');
+      }
+      
+      print('Report $reportId marked with issues by engineer $engineerUserId');
+    } catch (e) {
+      print('Error rejecting report: $e');
+      throw Exception('Failed to reject report: $e');
+    }
+  }
+  
+  /// Get all reports under review by engineer
+  Future<List<DetectionReport>> getReportsUnderReview() async {
+    try {
+      final db = DatabaseHelper();
+      final reportMaps = await db.getReportsByVerificationStatus('review');
+      
+      List<DetectionReport> reports = [];
+      for (final map in reportMaps) {
+        final report = await getReport(map['id']);
+        if (report != null) {
+          reports.add(report);
+        }
+      }
+      
+      return reports;
+    } catch (e) {
+      print('Error getting reports under review: $e');
+      throw Exception('Failed to get reports under review: $e');
+    }
+  }
+  
+  /// Get all engineer verification records
+  Future<List<EngineerVerification>> getAllEngineerVerifications() async {
+    try {
+      final db = DatabaseHelper();
+      final verificationMaps = await db.getAllEngineerVerifications();
+      
+      return verificationMaps
+          .map((map) => EngineerVerification.fromMap(map))
+          .toList();
+    } catch (e) {
+      print('Error getting engineer verifications: $e');
+      throw Exception('Failed to get engineer verifications: $e');
+    }
+  }
+  
+  /// Get engineer verification by status
+  Future<List<EngineerVerification>> getEngineerVerificationsByStatus(String status) async {
+    try {
+      final db = DatabaseHelper();
+      final verificationMaps = await db.getEngineerVerificationsByStatus(status);
+      
+      return verificationMaps
+          .map((map) => EngineerVerification.fromMap(map))
+          .toList();
+    } catch (e) {
+      print('Error getting verifications by status: $e');
+      throw Exception('Failed to get verifications by status: $e');
+    }
+  }
+
+  /// Private helper method to update verification status
+  Future<void> _updateVerificationStatus(String reportId, String status, String engineerUserId, String comments) async {
+    final db = DatabaseHelper();
+    final now = DateTime.now().toIso8601String();
+    
+    // Update the report
+    await db.updateReportVerificationStatus(reportId, {
+      'verificationStatus': status,
+      'engineerComments': comments,
+      'reviewedAt': now,
+    });
+    
+    // Update flagged report in Firestore with new single-collection approach
+    try {
+      await FirestoreSyncService.updateFlaggedReportStatus(
+        reportId, 
+        status, 
+        engineerUserId, 
+        comments
+      );
+    } catch (e) {
+      print('Failed to sync updated verification to Firestore: $e');
+    }
+  }
+  }
+
+  /// Update engineer verification status and sync to Firestore
+  Future<bool> updateVerificationStatus(String reportId, String status, 
+      {String? comments, String? engineerId}) async {
+    try {
+      // Update verification status using new single-collection approach
+      await FirestoreSyncService.updateFlaggedReportStatus(
+        reportId, 
+        status, 
+        engineerId ?? 'unknown', 
+        comments
+      );
+      
+      return true;
+    } catch (e) {
+      print('Error updating verification status: $e');
+      throw Exception('Failed to update verification status: $e');
+    }
+  }

@@ -7,6 +7,13 @@ class DetectionReport {
   final List<DamageDetection> detections;
   final ReportSummary summary;
   final bool synced;
+  
+  // Engineer verification fields
+  final bool flaggedForVerification;
+  final DateTime? flaggedAt;
+  final String verificationStatus; // "none", "review", "clear", "issues"
+  final String? engineerComments;
+  final DateTime? reviewedAt;
 
   DetectionReport({
     required this.id,
@@ -16,6 +23,11 @@ class DetectionReport {
     required this.detections,
     required this.summary,
     this.synced = false,
+    this.flaggedForVerification = false,
+    this.flaggedAt,
+    this.verificationStatus = 'none',
+    this.engineerComments,
+    this.reviewedAt,
   });
 
   Map<String, dynamic> toMap() {
@@ -28,6 +40,11 @@ class DetectionReport {
       'severityLevel': summary.overallSeverity,
       'recommendations': summary.recommendations.join('|'),
       'synced': synced ? 1 : 0,
+      'flaggedForVerification': flaggedForVerification ? 1 : 0,
+      'flaggedAt': flaggedAt?.toIso8601String(),
+      'verificationStatus': verificationStatus,
+      'engineerComments': engineerComments,
+      'reviewedAt': reviewedAt?.toIso8601String(),
     };
   }
 
@@ -51,6 +68,11 @@ class DetectionReport {
         minorCount: 0,
       ),
       synced: (map['synced'] ?? 0) == 1,
+      flaggedForVerification: (map['flaggedForVerification'] ?? 0) == 1,
+      flaggedAt: map['flaggedAt'] != null ? DateTime.parse(map['flaggedAt']) : null,
+      verificationStatus: map['verificationStatus'] ?? 'none',
+      engineerComments: map['engineerComments'],
+      reviewedAt: map['reviewedAt'] != null ? DateTime.parse(map['reviewedAt']) : null,
     );
   }
 }
@@ -175,6 +197,59 @@ class ReportSummary {
       criticalCount: map['criticalCount'] ?? 0,
       moderateCount: map['moderateCount'] ?? 0,
       minorCount: map['minorCount'] ?? 0,
+    );
+  }
+}
+
+/// Model for engineer verification records
+class EngineerVerification {
+  final String id;
+  final String originalReportId;
+  final String userId; // Who flagged it
+  final DateTime flaggedAt;
+  final Map<String, dynamic> reportSnapshot; // Full copy of report
+  final String status; // "review", "clear", "issues"
+  final String? engineerComments;
+  final String? engineerId; // Who reviewed it
+  final DateTime? reviewedAt;
+
+  EngineerVerification({
+    required this.id,
+    required this.originalReportId,
+    required this.userId,
+    required this.flaggedAt,
+    required this.reportSnapshot,
+    this.status = 'review',
+    this.engineerComments,
+    this.engineerId,
+    this.reviewedAt,
+  });
+
+  Map<String, dynamic> toMap() {
+    return {
+      'id': id,
+      'originalReportId': originalReportId,
+      'userId': userId,
+      'flaggedAt': flaggedAt.toIso8601String(),
+      'reportSnapshot': jsonEncode(reportSnapshot), // Convert Map to JSON string
+      'status': status,
+      'engineerComments': engineerComments,
+      'engineerId': engineerId,
+      'reviewedAt': reviewedAt?.toIso8601String(),
+    };
+  }
+
+  factory EngineerVerification.fromMap(Map<String, dynamic> map) {
+    return EngineerVerification(
+      id: map['id'],
+      originalReportId: map['originalReportId'],
+      userId: map['userId'],
+      flaggedAt: DateTime.parse(map['flaggedAt']),
+      reportSnapshot: jsonDecode(map['reportSnapshot']), // Convert JSON string back to Map
+      status: map['status'] ?? 'review',
+      engineerComments: map['engineerComments'],
+      engineerId: map['engineerId'],
+      reviewedAt: map['reviewedAt'] != null ? DateTime.parse(map['reviewedAt']) : null,
     );
   }
 }

@@ -19,7 +19,7 @@ class DatabaseHelper {
     final path = join(dbPath, 'app_database.db');
     return await openDatabase(
       path,
-      version: 4,
+      version: 6, // Incremented for engineer verification schema fix
       onCreate: _onCreate,
       onUpgrade: _onUpgrade,
     );
@@ -27,6 +27,7 @@ class DatabaseHelper {
 
   Future _onCreate(Database db, int version) async {
     await _createTables(db);
+    await _createEngineerVerificationTable(db);
   }
 
   Future _onUpgrade(Database db, int oldVersion, int newVersion) async {
@@ -52,6 +53,45 @@ class DatabaseHelper {
       await db.execute('DROP TABLE IF EXISTS detections');
       await db.execute('DROP TABLE IF EXISTS reports');
       await _createReportTables(db);
+    }
+    if (oldVersion < 5) {
+      // Add engineer verification fields
+      try {
+        var result = await db.rawQuery("PRAGMA table_info(reports)");
+        bool flaggedExists = result.any((column) => column['name'] == 'flaggedForVerification');
+        
+        if (!flaggedExists) {
+          await db.execute('ALTER TABLE reports ADD COLUMN flaggedForVerification INTEGER NOT NULL DEFAULT 0');
+          await db.execute('ALTER TABLE reports ADD COLUMN flaggedAt TEXT');
+          await db.execute('ALTER TABLE reports ADD COLUMN verificationStatus TEXT NOT NULL DEFAULT "none"');
+          await db.execute('ALTER TABLE reports ADD COLUMN engineerComments TEXT');
+          await db.execute('ALTER TABLE reports ADD COLUMN reviewedAt TEXT');
+          print('Added engineer verification columns to reports table');
+        }
+        
+        // Create engineer verification table if it doesn't exist
+        try {
+          await _createEngineerVerificationTable(db);
+          print('Created engineer_verification table');
+        } catch (e) {
+          // Table might already exist
+          print('Engineer verification table might already exist: $e');
+        }
+        
+      } catch (e) {
+        print('Error adding engineer verification columns: $e');
+      }
+    }
+    if (oldVersion < 6) {
+      // Fix engineer verification table schema
+      try {
+        // Drop and recreate the engineer_verification table with correct schema
+        await db.execute('DROP TABLE IF EXISTS engineer_verification');
+        await _createEngineerVerificationTable(db);
+        print('Recreated engineer_verification table with correct schema');
+      } catch (e) {
+        print('Error fixing engineer verification table schema: $e');
+      }
     }
   }
 
@@ -79,7 +119,12 @@ class DatabaseHelper {
         detectionsCount INTEGER NOT NULL,
         severityLevel TEXT NOT NULL,
         recommendations TEXT NOT NULL,
-        synced INTEGER NOT NULL DEFAULT 0
+        synced INTEGER NOT NULL DEFAULT 0,
+        flaggedForVerification INTEGER NOT NULL DEFAULT 0,
+        flaggedAt TEXT,
+        verificationStatus TEXT NOT NULL DEFAULT 'none',
+        engineerComments TEXT,
+        reviewedAt TEXT
       )
     ''');
 
@@ -95,6 +140,23 @@ class DatabaseHelper {
         severity TEXT NOT NULL,
         recommendations TEXT NOT NULL,
         FOREIGN KEY (reportId) REFERENCES reports (id)
+      )
+    ''');
+  }
+
+  Future _createEngineerVerificationTable(Database db) async {
+    await db.execute('''
+      CREATE TABLE engineer_verification (
+        id TEXT PRIMARY KEY,
+        originalReportId TEXT NOT NULL,
+        userId TEXT NOT NULL,
+        flaggedAt TEXT NOT NULL,
+        reportSnapshot TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'review',
+        engineerComments TEXT,
+        engineerId TEXT,
+        reviewedAt TEXT,
+        FOREIGN KEY (originalReportId) REFERENCES reports (id)
       )
     ''');
   }
@@ -196,6 +258,104 @@ class DatabaseHelper {
     final path = join(dbPath, 'app_database.db');
     await deleteDatabase(path);
     _database = null; // Force recreation on next access
+  }
+
+  // Engineer Verification methods
+  Future<int> insertEngineerVerification(Map<String, dynamic> verification) async {
+    final db = await database;
+    return await db.insert('engineer_verification', verification);
+  }
+
+  Future<List<Map<String, dynamic>>> getAllEngineerVerifications() async {
+    final db = await database;
+    return await db.query('engineer_verification', orderBy: 'flaggedAt DESC');
+  }
+
+  Future<List<Map<String, dynamic>>> getEngineerVerificationsByStatus(String status) async {
+    final db = await database;
+    return await db.query(
+      'engineer_verification', 
+      where: 'status = ?', 
+      whereArgs: [status],
+      orderBy: 'flaggedAt DESC'
+    );
+  }
+
+  Future<Map<String, dynamic>?> getEngineerVerificationById(String id) async {
+    final db = await database;
+    final results = await db.query('engineer_verification', where: 'id = ?', whereArgs: [id]);
+    return results.isNotEmpty ? results.first : null;
+  }
+
+  Future<Map<String, dynamic>?> getEngineerVerificationByReportId(String reportId) async {
+    final db = await database;
+    final results = await db.query('engineer_verification', where: 'originalReportId = ?', whereArgs: [reportId]);
+    return results.isNotEmpty ? results.first : null;
+  }
+
+  Future<int> updateEngineerVerification(String id, Map<String, dynamic> verification) async {
+    final db = await database;
+    return await db.update('engineer_verification', verification, where: 'id = ?', whereArgs: [id]);
+  }
+
+  Future<void> deleteEngineerVerification(String id) async {
+    final db = await database;
+    await db.delete('engineer_verification', where: 'id = ?', whereArgs: [id]);
+  }
+
+  // Update report verification status
+  Future<int> updateReportVerificationStatus(String reportId, Map<String, dynamic> updates) async {
+    final db = await database;
+    return await db.update('reports', updates, where: 'id = ?', whereArgs: [reportId]);
+  }
+
+  // Get reports by verification status
+  Future<List<Map<String, dynamic>>> getReportsByVerificationStatus(String status) async {
+    final db = await database;
+    return await db.query(
+      'reports',
+      where: 'verificationStatus = ?',
+      whereArgs: [status],
+      orderBy: 'flaggedAt DESC'
+    );
+  }
+
+  // Migration method to update existing verification status values to new terminology
+  Future<void> migrateVerificationStatusTerminology() async {
+    final db = await database;
+    try {
+      // Update reports table: pending -> review, approved -> clear, rejected -> issues
+      await db.rawUpdate(
+        'UPDATE reports SET verificationStatus = ? WHERE verificationStatus = ?',
+        ['review', 'pending']
+      );
+      await db.rawUpdate(
+        'UPDATE reports SET verificationStatus = ? WHERE verificationStatus = ?',
+        ['clear', 'approved']
+      );
+      await db.rawUpdate(
+        'UPDATE reports SET verificationStatus = ? WHERE verificationStatus = ?',
+        ['issues', 'rejected']
+      );
+      
+      // Update engineer_verification table: pending -> review, approved -> clear, rejected -> issues
+      await db.rawUpdate(
+        'UPDATE engineer_verification SET status = ? WHERE status = ?',
+        ['review', 'pending']
+      );
+      await db.rawUpdate(
+        'UPDATE engineer_verification SET status = ? WHERE status = ?',
+        ['clear', 'approved']
+      );
+      await db.rawUpdate(
+        'UPDATE engineer_verification SET status = ? WHERE status = ?',
+        ['issues', 'rejected']
+      );
+      
+      print('Successfully migrated verification status terminology');
+    } catch (e) {
+      print('Error during verification status terminology migration: $e');
+    }
   }
 }
 

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:integriscan/models/report_models.dart';
 import 'package:integriscan/services/report_service.dart';
 import 'package:integriscan/screens/reports/report_detail_screen.dart';
+import 'package:integriscan/screens/verification/flag_report_screen.dart';
 import 'package:integriscan/providers/auth_provider.dart';
 import 'package:provider/provider.dart';
 
@@ -166,6 +167,20 @@ class _ReportsListScreenState extends State<ReportsListScreen> {
     }
   }
 
+  Future<void> _navigateToFlagReport(DetectionReport report) async {
+    final result = await Navigator.push<bool>(
+      context,
+      MaterialPageRoute(
+        builder: (context) => FlagReportScreen(report: report),
+      ),
+    );
+    
+    // Refresh the list if the flag status was changed
+    if (result == true) {
+      await _loadReports();
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -304,7 +319,7 @@ class _ReportsListScreenState extends State<ReportsListScreen> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              // Header
+              // Header with title and severity badge
               Row(
                 children: [
                   if (_selectionMode)
@@ -330,9 +345,25 @@ class _ReportsListScreenState extends State<ReportsListScreen> {
                       onSelected: (value) {
                         if (value == 'delete') {
                           _deleteSingleReport(report);
+                        } else if (value == 'flag') {
+                          _navigateToFlagReport(report);
                         }
                       },
                       itemBuilder: (BuildContext context) => [
+                        PopupMenuItem<String>(
+                          value: 'flag',
+                          child: Row(
+                            children: [
+                              Icon(
+                                report.flaggedForVerification ? Icons.flag : Icons.outlined_flag,
+                                color: report.flaggedForVerification ? Colors.orange : Colors.grey[600],
+                                size: 20,
+                              ),
+                              const SizedBox(width: 8),
+                              Text(report.flaggedForVerification ? 'Manage Flag' : 'Flag for Review'),
+                            ],
+                          ),
+                        ),
                         const PopupMenuItem<String>(
                           value: 'delete',
                           child: Row(
@@ -345,19 +376,108 @@ class _ReportsListScreenState extends State<ReportsListScreen> {
                         ),
                       ],
                     ),
+                  const SizedBox(width: 8),
                   _buildSeverityBadge(report.summary.overallSeverity),
                 ],
               ),
-              const SizedBox(height: 8),
               
-              // Date
-              Text(
-                'Generated: ${_formatDate(report.createdAt)}',
-                style: TextStyle(
-                  fontSize: 14,
-                  color: Colors.grey[600],
-                ),
+              // Flagged status and date row
+              const SizedBox(height: 8),
+              Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      'Generated: ${_formatDate(report.createdAt)}',
+                      style: TextStyle(
+                        fontSize: 14,
+                        color: Colors.grey[600],
+                      ),
+                    ),
+                  ),
+                  if (report.flaggedForVerification)
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                      decoration: BoxDecoration(
+                        color: Colors.orange.withOpacity(0.1),
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(color: Colors.orange.withOpacity(0.3)),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(
+                            Icons.flag,
+                            size: 12,
+                            color: Colors.orange[700],
+                          ),
+                          const SizedBox(width: 4),
+                          Text(
+                            'FLAGGED FOR REVIEW',
+                            style: TextStyle(
+                              fontSize: 10,
+                              fontWeight: FontWeight.w600,
+                              color: Colors.orange[700],
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                ],
               ),
+              
+              // Show verification status if available
+              if (report.flaggedForVerification && report.verificationStatus != 'review') ...[
+                const SizedBox(height: 8),
+                Container(
+                  padding: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    color: report.verificationStatus == 'clear' 
+                        ? Colors.green.withOpacity(0.1)
+                        : Colors.red.withOpacity(0.1),
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(
+                      color: report.verificationStatus == 'clear' 
+                          ? Colors.green.withOpacity(0.3)
+                          : Colors.red.withOpacity(0.3),
+                    ),
+                  ),
+                  child: Row(
+                    children: [
+                      Icon(
+                        report.verificationStatus == 'clear' 
+                            ? Icons.check_circle_outline
+                            : Icons.cancel_outlined,
+                        size: 16,
+                        color: report.verificationStatus == 'clear' 
+                            ? Colors.green[700]
+                            : Colors.red[700],
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          report.verificationStatus == 'clear' 
+                              ? 'Report Cleared - No Issues Found'
+                              : 'Issues Found - Needs Correction',
+                          style: TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600,
+                            color: report.verificationStatus == 'clear' 
+                                ? Colors.green[700]
+                                : Colors.red[700],
+                          ),
+                        ),
+                      ),
+                      if (report.engineerComments != null && report.engineerComments!.isNotEmpty)
+                        Icon(
+                          Icons.comment,
+                          size: 14,
+                          color: Colors.grey[600],
+                        ),
+                    ],
+                  ),
+                ),
+              ],
+              
               const SizedBox(height: 12),
               
               // Statistics

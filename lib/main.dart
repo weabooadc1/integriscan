@@ -6,6 +6,7 @@ import 'package:provider/provider.dart';
 import 'package:integriscan/providers/auth_provider.dart';
 import 'package:integriscan/screens/home/home_screen.dart';
 import 'package:integriscan/utils/logger.dart';
+import 'package:integriscan/database/database_helper.dart';
 import 'firebase_options.dart';
 
 
@@ -14,6 +15,11 @@ Future<void> main() async {
   await Firebase.initializeApp(
     options: DefaultFirebaseOptions.currentPlatform,
   );
+  
+  // Run database migration for verification status terminology
+  final dbHelper = DatabaseHelper();
+  await dbHelper.migrateVerificationStatusTerminology();
+  
   runApp(const IndexPage());
 }
 
