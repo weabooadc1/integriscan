@@ -269,7 +269,7 @@ class _ReportsListScreenState extends State<ReportsListScreen> {
             IconButton(
               icon: Icon(_selectedReportIds.length == _reports.length 
                   ? Icons.deselect 
-                  : Icons.select_all),
+                  : Icons.select_all_outlined),
               onPressed: () {
                 setState(() {
                   if (_selectedReportIds.length == _reports.length) {

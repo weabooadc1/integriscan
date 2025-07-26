@@ -1,0 +1,28 @@
+rules_version = '2';
+
+// Firebase Storage Security Rules for IntegriScan
+service firebase.storage {
+  match /b/{bucket}/o {
+    // Rules for report images
+    match /report_images/{userId}/{reportId}/{imageId} {
+      // Allow authenticated users to read/write their own report images
+      allow read, write: if request.auth != null && request.auth.uid == userId;
+      
+      // Allow engineers to read any report images for verification purposes
+      allow read: if request.auth != null && 
+        firestore.exists(/databases/(default)/documents/users/$(request.auth.uid)) &&
+        firestore.get(/databases/(default)/documents/users/$(request.auth.uid)).data.role in ['engineer', 'admin'];
+    }
+    
+    // Rules for user profile images (if needed in the future)
+    match /user_images/{userId}/{imageId} {
+      // Allow users to read/write their own profile images
+      allow read, write: if request.auth != null && request.auth.uid == userId;
+    }
+    
+    // Allow reading of public images (if any)
+    match /public/{allPaths=**} {
+      allow read: if true;
+    }
+  }
+}

@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_vlc_player/flutter_vlc_player.dart';
 import 'package:integriscan/constant.dart';
 import 'package:integriscan/services/tflite_service.dart';
@@ -318,17 +319,46 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> {
     }
   }
 
-  void _addTestDetection() {
+  void _addTestDetection() async {
     print('_addTestDetection called');
     final random = DateTime.now().millisecondsSinceEpoch % 100;
     final damageTypes = ['Crack', 'Deformation', 'Rust', 'Scaling'];
     final damageType = damageTypes[random % 4];
     final confidence = 0.6 + (random % 40) / 100;
     
+    // Create a sample image for testing Firebase Storage
+    String imagePath = '';
+    try {
+      // Get app documents directory
+      final directory = await getApplicationDocumentsDirectory();
+      final framesDir = Directory('${directory.path}/frames');
+      
+      // Create frames directory if it doesn't exist
+      if (!await framesDir.exists()) {
+        await framesDir.create(recursive: true);
+      }
+      
+      // Copy one of the existing assets as a test image
+      final timestamp = DateTime.now().millisecondsSinceEpoch;
+      final filename = 'test_damage_${damageType.toLowerCase()}_${timestamp}.png';
+      final targetFile = File('${framesDir.path}/$filename');
+      
+      // Load an asset image and save it as test damage image
+      final ByteData data = await rootBundle.load('assets/images/main_top.png');
+      final Uint8List bytes = data.buffer.asUint8List();
+      await targetFile.writeAsBytes(bytes);
+      
+      imagePath = targetFile.path;
+      print('Test image created at: $imagePath');
+    } catch (e) {
+      print('Error creating test image: $e');
+      // Fall back to empty path if asset loading fails
+    }
+    
     final detection = {
       'damageType': damageType,
       'confidence': confidence,
-      'imagePath': '', // Mock image path
+      'imagePath': imagePath, // Now includes actual image path for testing
       'timestamp': DateTime.now().millisecondsSinceEpoch,
       'boundingBox': {
         'x': 0.2 + (random % 40) / 100,

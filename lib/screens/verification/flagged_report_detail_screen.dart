@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:integriscan/models/report_models.dart';
+import 'package:integriscan/services/firebase_storage_service.dart';
 import 'package:integriscan/component/primarybutton.dart';
-import 'package:integriscan/component/lightbutton.dart';
 import 'dart:io';
 
 class FlaggedReportDetailScreen extends StatelessWidget {
@@ -113,7 +113,7 @@ class FlaggedReportDetailScreen extends StatelessWidget {
     String text;
     IconData icon;
 
-    switch (report.verificationStatus?.toLowerCase() ?? 'review') {
+    switch (report.verificationStatus.toLowerCase()) {
       case 'clear':
         color = Colors.green;
         text = 'CLEARED';
@@ -156,7 +156,7 @@ class FlaggedReportDetailScreen extends StatelessWidget {
   }
 
   Widget _buildVerificationStatusCard() {
-    if (report.verificationStatus == null || report.verificationStatus == 'review') {
+    if (report.verificationStatus == 'review') {
       return Container(
         margin: const EdgeInsets.all(16),
         padding: const EdgeInsets.all(16),
@@ -201,7 +201,7 @@ class FlaggedReportDetailScreen extends StatelessWidget {
       );
     }
 
-    final isCleared = report.verificationStatus?.toLowerCase() == 'clear';
+    final isCleared = report.verificationStatus.toLowerCase() == 'clear';
     final color = isCleared ? Colors.green : Colors.red;
     final icon = isCleared ? Icons.check_circle : Icons.error;
     final title = isCleared ? 'Report Cleared' : 'Issues Found';
@@ -477,33 +477,7 @@ class FlaggedReportDetailScreen extends StatelessWidget {
           ),
           const SizedBox(height: 8),
           if (detection.imagePath.isNotEmpty) ...[
-            ClipRRect(
-              borderRadius: BorderRadius.circular(8),
-              child: Image.file(
-                File(detection.imagePath),
-                height: 200,
-                width: double.infinity,
-                fit: BoxFit.cover,
-                errorBuilder: (context, error, stackTrace) {
-                  return Container(
-                    height: 200,
-                    width: double.infinity,
-                    decoration: BoxDecoration(
-                      color: Colors.grey[200],
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                    child: const Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        Icon(Icons.image_not_supported, color: Colors.grey, size: 48),
-                        SizedBox(height: 8),
-                        Text('Image not available', style: TextStyle(color: Colors.grey)),
-                      ],
-                    ),
-                  );
-                },
-              ),
-            ),
+            _buildDetectionImage(detection),
             const SizedBox(height: 12),
           ],
           if (detection.recommendations.isNotEmpty) ...[
@@ -544,6 +518,116 @@ class FlaggedReportDetailScreen extends StatelessWidget {
         ],
       ),
     );
+  }
+
+  Widget _buildDetectionImage(DamageDetection detection) {
+    // Check if it's a Firebase Storage URL
+    if (FirebaseStorageService.isFirebaseUrl(detection.imagePath)) {
+      return FutureBuilder<String>(
+        future: FirebaseStorageService.getDisplayPath(detection.imagePath, detection.reportId, detection.id),
+        builder: (context, snapshot) {
+          if (snapshot.connectionState == ConnectionState.waiting) {
+            return Container(
+              height: 200,
+              decoration: BoxDecoration(
+                color: Colors.grey[200],
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: const Center(
+                child: CircularProgressIndicator(),
+              ),
+            );
+          }
+          
+          final imagePath = snapshot.data ?? detection.imagePath;
+          
+          return ClipRRect(
+            borderRadius: BorderRadius.circular(8),
+            child: _buildImageWidget(imagePath),
+          );
+        },
+      );
+    } else {
+      // It's a local file path
+      return ClipRRect(
+        borderRadius: BorderRadius.circular(8),
+        child: _buildImageWidget(detection.imagePath),
+      );
+    }
+  }
+
+  Widget _buildImageWidget(String imagePath) {
+    // If it's a URL, use Image.network, otherwise use Image.file
+    if (imagePath.startsWith('http')) {
+      return Image.network(
+        imagePath,
+        height: 200,
+        width: double.infinity,
+        fit: BoxFit.cover,
+        loadingBuilder: (context, child, loadingProgress) {
+          if (loadingProgress == null) return child;
+          return Container(
+            height: 200,
+            decoration: BoxDecoration(
+              color: Colors.grey[200],
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: Center(
+              child: CircularProgressIndicator(
+                value: loadingProgress.expectedTotalBytes != null
+                    ? loadingProgress.cumulativeBytesLoaded / loadingProgress.expectedTotalBytes!
+                    : null,
+              ),
+            ),
+          );
+        },
+        errorBuilder: (context, error, stackTrace) {
+          return Container(
+            height: 200,
+            decoration: BoxDecoration(
+              color: Colors.grey[200],
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: const Center(
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(Icons.image_not_supported, color: Colors.grey, size: 48),
+                  SizedBox(height: 8),
+                  Text('Image not available', style: TextStyle(color: Colors.grey)),
+                ],
+              ),
+            ),
+          );
+        },
+      );
+    } else {
+      return Image.file(
+        File(imagePath),
+        height: 200,
+        width: double.infinity,
+        fit: BoxFit.cover,
+        errorBuilder: (context, error, stackTrace) {
+          return Container(
+            height: 200,
+            decoration: BoxDecoration(
+              color: Colors.grey[200],
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: const Center(
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(Icons.image_not_supported, color: Colors.grey, size: 48),
+                  SizedBox(height: 8),
+                  Text('Image not available', style: TextStyle(color: Colors.grey)),
+                ],
+              ),
+            ),
+          );
+        },
+      );
+    }
   }
 
   Widget _buildRecommendationsCard() {

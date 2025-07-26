@@ -5,7 +5,6 @@ import 'package:integriscan/services/report_service.dart';
 import 'package:integriscan/services/firestore_sync_service.dart';
 import 'package:integriscan/database/database_helper.dart';
 import 'package:integriscan/providers/auth_provider.dart';
-import 'package:integriscan/screens/reports/report_detail_screen.dart';
 import 'package:integriscan/screens/verification/flagged_report_detail_screen.dart';
 import 'package:integriscan/screens/reports/reports_list_screen.dart';
 import 'package:integriscan/screens/verification/engineer_verification_screen.dart';

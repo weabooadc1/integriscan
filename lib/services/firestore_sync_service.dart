@@ -1,5 +1,6 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:integriscan/models/report_models.dart';
+import 'package:integriscan/services/firebase_storage_service.dart';
 
 class FirestoreSyncService {
   static final _firestore = FirebaseFirestore.instance;
@@ -7,6 +8,16 @@ class FirestoreSyncService {
   static Future<void> uploadReport(DetectionReport report) async {
     try {
       print('Starting Firestore upload for report: ${report.id}');
+      
+      // First, upload images to Firebase Storage and get download URLs
+      print('Uploading images to Firebase Storage...');
+      final detectionMaps = report.detections.map((d) => {
+        'id': d.id,
+        'imagePath': d.imagePath,
+      }).toList();
+      
+      final imageUrls = await FirebaseStorageService.uploadReportImages(detectionMaps, report.id);
+      print('Uploaded ${imageUrls.length} images to Firebase Storage');
       
       // Upload main report document
       final reportRef = _firestore.collection('reports').doc(report.id);
@@ -26,17 +37,20 @@ class FirestoreSyncService {
       await reportRef.set(reportData);
       print('Report document uploaded successfully');
       
-      // Upload detections as subcollection
+      // Upload detections as subcollection with Firebase Storage URLs
       print('Uploading ${report.detections.length} detections...');
       final detectionsRef = reportRef.collection('detections');
       
       for (final detection in report.detections) {
+        // Use Firebase Storage URL if available, otherwise use local path
+        final imageUrl = imageUrls[detection.id] ?? detection.imagePath;
+        
         final detectionData = {
           'id': detection.id,
           'reportId': detection.reportId,
           'damageType': detection.damageType,
           'confidence': detection.confidence,
-          'imagePath': detection.imagePath,
+          'imagePath': imageUrl, // This will be the Firebase Storage download URL
           'timestamp': detection.timestamp.toIso8601String(),
           'boundingBox': detection.boundingBox?.toMap(),
           'severity': detection.severity,
@@ -44,7 +58,7 @@ class FirestoreSyncService {
         };
         
         await detectionsRef.doc(detection.id).set(detectionData);
-        print('Detection ${detection.id} uploaded');
+        print('Detection ${detection.id} uploaded with image URL: ${imageUrl.length > 50 ? '${imageUrl.substring(0, 50)}...' : imageUrl}');
       }
       
       print('All detections uploaded successfully');
@@ -96,6 +110,18 @@ class FirestoreSyncService {
             .map((detectionDoc) => detectionDoc.data())
             .toList();
         
+        // Download images from Firebase Storage for detections
+        print('Downloading images for report ${reportData['id']}...');
+        final localImagePaths = await FirebaseStorageService.downloadReportImages(detections, reportData['id']);
+        
+        // Update detection image paths with local paths
+        for (final detection in detections) {
+          final detectionId = detection['id'];
+          if (localImagePaths.containsKey(detectionId)) {
+            detection['imagePath'] = localImagePaths[detectionId];
+          }
+        }
+        
         // Add detections to report data
         reportData['detections'] = detections;
         reports.add(reportData);
@@ -139,6 +165,18 @@ class FirestoreSyncService {
           .map((detectionDoc) => detectionDoc.data())
           .toList();
       
+      // Download images from Firebase Storage for detections
+      print('Downloading images for report $reportId...');
+      final localImagePaths = await FirebaseStorageService.downloadReportImages(detections, reportId);
+      
+      // Update detection image paths with local paths
+      for (final detection in detections) {
+        final detectionId = detection['id'];
+        if (localImagePaths.containsKey(detectionId)) {
+          detection['imagePath'] = localImagePaths[detectionId];
+        }
+      }
+      
       // Add detections to report data
       reportData['detections'] = detections;
       
@@ -157,13 +195,30 @@ class FirestoreSyncService {
       
       final reportRef = _firestore.collection('reports').doc(reportId);
       
-      // First, delete all detections in the subcollection
-      print('Deleting detections subcollection...');
+      // First, get detections to delete their images from Firebase Storage
+      print('Getting detections for image cleanup...');
       final detectionsRef = reportRef.collection('detections');
       final detectionsSnapshot = await detectionsRef.get()
           .timeout(const Duration(seconds: 15));
       
-      // Delete each detection document
+      // Delete images from Firebase Storage
+      print('Deleting images from Firebase Storage...');
+      for (final detectionDoc in detectionsSnapshot.docs) {
+        final detectionData = detectionDoc.data();
+        final imagePath = detectionData['imagePath'] as String?;
+        
+        if (imagePath != null && FirebaseStorageService.isFirebaseUrl(imagePath)) {
+          try {
+            await FirebaseStorageService.deleteImage(imagePath);
+            print('Deleted image for detection ${detectionDoc.id}');
+          } catch (e) {
+            print('Warning: Could not delete image for detection ${detectionDoc.id}: $e');
+          }
+        }
+      }
+      
+      // Delete detection documents
+      print('Deleting detections subcollection...');
       final batch = _firestore.batch();
       for (final detectionDoc in detectionsSnapshot.docs) {
         batch.delete(detectionDoc.reference);
