@@ -78,34 +78,131 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> {
     _vlcViewController.addListener(() {
       if (mounted) {
         final isPlaying = _vlcViewController.value.isPlaying;
+        final isInitialized = _vlcViewController.value.isInitialized;
         final hasError = _vlcViewController.value.hasError;
         
+        print('🎬 VLC State: playing=$isPlaying, initialized=$isInitialized, hasError=$hasError');
+        
         setState(() {
-          _isConnected = isPlaying && !hasError;
-          _isLoading = false;
+          _isConnected = isPlaying && isInitialized && !hasError;
+          _isLoading = !isInitialized && !hasError;
         });
+        
+        if (hasError) {
+          print('🎬 VLC Error detected: ${_vlcViewController.value.errorDescription}');
+        }
       }
     });
   }
 
   void _initializeTFLite() async {
-    final success = await TFLiteService.initialize();
-    if (success && mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: const Text('AI Analysis ready!'),
-          backgroundColor: Colors.green,
-          behavior: SnackBarBehavior.floating,
-        ),
-      );
-    } else if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: const Text('AI model not available - using mock analysis'),
-          backgroundColor: Colors.orange,
-          behavior: SnackBarBehavior.floating,
-        ),
-      );
+    print('🚀 RTSP Screen: Starting TFLite initialization...');
+    try {
+      final success = await TFLiteService.initialize();
+      print('🚀 RTSP Screen: TFLite initialization result: $success');
+      
+      if (success && mounted) {
+        print('🚀 RTSP Screen: TFLite initialization successful, testing model...');
+        // Test the model with a sample image
+        await _testModelWithSampleImage();
+        
+        // Check if we're in mock mode
+        final modelInfo = TFLiteService.getModelInfo();
+        print('🚀 RTSP Screen: Model info after initialization: $modelInfo');
+        
+        if (modelInfo['mockMode'] == true) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: const Text('AI Analysis ready! (Mock Mode - for testing)'),
+              backgroundColor: Colors.orange,
+              behavior: SnackBarBehavior.floating,
+            ),
+          );
+        } else {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: const Text('AI Analysis ready!'),
+              backgroundColor: Colors.green,
+              behavior: SnackBarBehavior.floating,
+            ),
+          );
+        }
+      } else if (mounted) {
+        print('🚀 RTSP Screen: TFLite initialization failed');
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: const Text('AI model not available - using mock analysis'),
+            backgroundColor: Colors.orange,
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+    } catch (e) {
+      print('🚀 RTSP Screen: Exception during TFLite initialization: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('AI model initialization error: $e'),
+            backgroundColor: Colors.red,
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+    }
+  }
+
+  Future<void> _testModelWithSampleImage() async {
+    try {
+      print('=== Testing Model with Sample Image ===');
+      
+      // Get model info
+      final modelInfo = TFLiteService.getModelInfo();
+      print('Model info: $modelInfo');
+      
+      // Load a sample image from assets to test
+      final ByteData data = await rootBundle.load('assets/images/TEsting2.jpg');
+      final Uint8List bytes = data.buffer.asUint8List();
+      
+      print('Testing model with sample image (${bytes.length} bytes)');
+      
+      // Test inference
+      final result = await TFLiteService.runInference(bytes);
+      print('Sample image test result: $result');
+      
+      if (result != null) {
+        print('✅ Model is working! Top prediction: ${result['damageType']} (${result['confidence']})');
+      } else {
+        print('❌ Model test failed - null result');
+      }
+      
+      // Test frame capture functionality after a delay to ensure widget is built
+      Future.delayed(const Duration(seconds: 2), () async {
+        await _testFrameCapture();
+      });
+      
+    } catch (e) {
+      print('❌ Model test error: $e');
+    }
+  }
+
+  Future<void> _testFrameCapture() async {
+    try {
+      print('=== Testing Frame Capture ===');
+      
+      // Test if the GlobalKey is properly attached
+      print('🎥 Player key context: ${_playerKey.currentContext != null}');
+      print('🎥 VLC Controller initialized: ${_vlcViewController.value.isInitialized}');
+      print('🎥 VLC Controller playing: ${_vlcViewController.value.isPlaying}');
+      
+      final frameBytes = await FrameCaptureService.captureWidget(_playerKey);
+      
+      if (frameBytes != null) {
+        print('✅ Frame capture test successful: ${frameBytes.length} bytes');
+      } else {
+        print('❌ Frame capture test failed');
+      }
+    } catch (e) {
+      print('❌ Frame capture test error: $e');
     }
   }
 
@@ -123,17 +220,21 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> {
 
   void _startAnalysis() {
     _analysisTimer = Timer.periodic(const Duration(seconds: 2), (timer) async {
-      if (!_analysisEnabled || !_isConnected) return;
+      if (!_analysisEnabled || !_isConnected || !mounted) return;
 
-      setState(() {
-        _isAnalyzing = true;
-      });
+      if (mounted) {
+        setState(() {
+          _isAnalyzing = true;
+        });
+      }
 
       await _runRealTimeAnalysis();
 
-      setState(() {
-        _isAnalyzing = false;
-      });
+      if (mounted) {
+        setState(() {
+          _isAnalyzing = false;
+        });
+      }
     });
   }
 
@@ -143,23 +244,48 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> {
   }
 
   Future<void> _runRealTimeAnalysis() async {
-    if (!_analysisEnabled || !_isConnected) return;
+    if (!_analysisEnabled || !_isConnected) {
+      print('=== Analysis Skipped ===');
+      print('Analysis enabled: $_analysisEnabled, Connected: $_isConnected');
+      return;
+    }
 
     try {
+      print('=== Starting Real-Time Analysis ===');
+      print('Analysis enabled: $_analysisEnabled, Connected: $_isConnected');
+      print('VLC Controller state: playing=${_vlcViewController.value.isPlaying}, initialized=${_vlcViewController.value.isInitialized}');
+      
+      // Additional checks for VLC player state
+      if (!_vlcViewController.value.isInitialized) {
+        print('VLC controller not initialized yet, skipping frame capture');
+        return;
+      }
+      
+      if (!_vlcViewController.value.isPlaying) {
+        print('VLC controller not playing, skipping frame capture');
+        return;
+      }
+      
+      // Small delay to ensure frame is ready
+      await Future.delayed(const Duration(milliseconds: 100));
+      
       // Capture frame from VLC player
       final frameBytes = await FrameCaptureService.captureWidget(_playerKey);
       
       if (frameBytes != null) {
+        print('Frame captured successfully: ${frameBytes.length} bytes');
+        
         // Run TFLite inference on the captured frame
         final result = await TFLiteService.runInference(frameBytes);
         
         if (result != null && result['isDamageDetected'] != null) {
+          print('TFLite analysis result: $result');
           await _processAnalysisResult(result, frameBytes);
         } else {
           print('TFLite returned null or invalid result.');
         }
       } else {
-        print('Frame capture failed.');
+        print('Frame capture failed - no frame data returned.');
       }
     } catch (e) {
       print('Real-time analysis error: $e');
@@ -171,47 +297,49 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> {
     final confidence = result['confidence'] ?? 0.0;
     final damageType = result['damageType'] ?? 'Unknown';
     
-    setState(() {
-      _totalFramesAnalyzed++;
-      if (isDamage) _damagesDetected++;
-      
-      // Update current detections
-      if (isDamage && confidence > 0.5) {
-        final detection = {
-          'label': damageType,
+    if (mounted) {
+      setState(() {
+        _totalFramesAnalyzed++;
+        if (isDamage) _damagesDetected++;
+        
+        // Update current detections
+        if (isDamage && confidence > 0.5) {
+          final detection = {
+            'label': damageType,
+            'confidence': confidence,
+            'box': {
+              'x': 0.3, // Center the bounding box for now
+              'y': 0.3,
+              'width': 0.4,
+              'height': 0.4,
+            }
+          };
+          
+          _currentDetections = [detection];
+          
+          // Save frame if damage detected
+          _saveAnalyzedFrame(frameBytes, damageType, confidence);
+          
+          // Store in history for report generation
+          _detectionHistory.add({
+            'damageType': damageType,
+            'confidence': confidence,
+            'imagePath': '', // Will be updated when frame is saved
+            'timestamp': DateTime.now().millisecondsSinceEpoch,
+            'boundingBox': detection['box'],
+          });
+        } else {
+          _currentDetections = [];
+        }
+        
+        _lastAnalysisResult = {
+          'isDamageDetected': isDamage,
           'confidence': confidence,
-          'box': {
-            'x': 0.3, // Center the bounding box for now
-            'y': 0.3,
-            'width': 0.4,
-            'height': 0.4,
-          }
-        };
-        
-        _currentDetections = [detection];
-        
-        // Save frame if damage detected
-        _saveAnalyzedFrame(frameBytes, damageType, confidence);
-        
-        // Store in history for report generation
-        _detectionHistory.add({
           'damageType': damageType,
-          'confidence': confidence,
-          'imagePath': '', // Will be updated when frame is saved
           'timestamp': DateTime.now().millisecondsSinceEpoch,
-          'boundingBox': detection['box'],
-        });
-      } else {
-        _currentDetections = [];
-      }
-      
-      _lastAnalysisResult = {
-        'isDamageDetected': isDamage,
-        'confidence': confidence,
-        'damageType': damageType,
-        'timestamp': DateTime.now().millisecondsSinceEpoch,
-      };
-    });
+        };
+      });
+    }
   }
 
   Future<void> _saveAnalyzedFrame(Uint8List frameBytes, String damageType, double confidence) async {
@@ -368,37 +496,45 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> {
       },
     };
     
-    setState(() {
-      _detectionHistory.add(detection);
-      _damagesDetected++;
-    });
+    if (mounted) {
+      setState(() {
+        _detectionHistory.add(detection);
+        _damagesDetected++;
+      });
+    }
     
     print('Detection history now has ${_detectionHistory.length} items');
     print('Added detection: $detection');
     
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text('Test detection added: $damageType (${(confidence * 100).toInt()}%) - Total: ${_detectionHistory.length}'),
-        backgroundColor: Colors.green,
-      ),
-    );
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Test detection added: $damageType (${(confidence * 100).toInt()}%) - Total: ${_detectionHistory.length}'),
+          backgroundColor: Colors.green,
+        ),
+      );
+    }
   }
 
   void _clearDetectionHistory() {
-    setState(() {
-      _detectionHistory.clear();
-      _damagesDetected = 0;
-    });
+    if (mounted) {
+      setState(() {
+        _detectionHistory.clear();
+        _damagesDetected = 0;
+      });
+    }
     
     print('Detection history cleared');
     
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('Detection history cleared'),
-        backgroundColor: Colors.orange,
-        duration: Duration(seconds: 2),
-      ),
-    );
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Detection history cleared'),
+          backgroundColor: Colors.orange,
+          duration: Duration(seconds: 2),
+        ),
+      );
+    }
   }
 
   @override

@@ -1,5 +1,4 @@
-No Damage
 Crack
 Rust
 Deformation
-Scaling
+No Damage

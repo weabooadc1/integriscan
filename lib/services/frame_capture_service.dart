@@ -7,29 +7,48 @@ class FrameCaptureService {
   /// Capture a frame from a widget (like VLC player)
   static Future<Uint8List?> captureWidget(GlobalKey key) async {
     try {
-      // Get the RenderRepaintBoundary
-      RenderRepaintBoundary? boundary = 
-          key.currentContext?.findRenderObject() as RenderRepaintBoundary?;
+      print('🎥 FrameCapture: Starting frame capture...');
       
-      if (boundary == null) {
-        print('Could not find RenderRepaintBoundary');
+      // Check if key has a context
+      if (key.currentContext == null) {
+        print('🎥 FrameCapture: GlobalKey has no context - widget not mounted');
         return null;
       }
+      
+      // Get the RenderRepaintBoundary
+      final renderObject = key.currentContext?.findRenderObject();
+      print('🎥 FrameCapture: RenderObject found: ${renderObject != null}');
+      
+      if (renderObject == null) {
+        print('🎥 FrameCapture: No render object found');
+        return null;
+      }
+      
+      if (renderObject is! RenderRepaintBoundary) {
+        print('🎥 FrameCapture: RenderObject is not RenderRepaintBoundary: ${renderObject.runtimeType}');
+        return null;
+      }
+      
+      final boundary = renderObject;
+      print('🎥 FrameCapture: RenderRepaintBoundary found, capturing image...');
 
       // Capture the image
       ui.Image image = await boundary.toImage(pixelRatio: 1.0);
+      print('🎥 FrameCapture: Image captured: ${image.width}x${image.height}');
       
       // Convert to bytes
       ByteData? byteData = await image.toByteData(format: ui.ImageByteFormat.png);
       
       if (byteData == null) {
-        print('Failed to convert image to bytes');
+        print('🎥 FrameCapture: Failed to convert image to bytes');
         return null;
       }
 
-      return byteData.buffer.asUint8List();
+      final bytes = byteData.buffer.asUint8List();
+      print('🎥 FrameCapture: Frame captured successfully: ${bytes.length} bytes');
+      return bytes;
     } catch (e) {
-      print('Frame capture failed: $e');
+      print('🎥 FrameCapture: Frame capture failed with error: $e');
       return null;
     }
   }
