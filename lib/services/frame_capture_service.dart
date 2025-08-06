@@ -32,11 +32,11 @@ class FrameCaptureService {
       final boundary = renderObject;
       print('🎥 FrameCapture: RenderRepaintBoundary found, capturing image...');
 
-      // Capture the image
-      ui.Image image = await boundary.toImage(pixelRatio: 1.0);
+      // CPU Optimization: Use lower pixel ratio for smaller images
+      ui.Image image = await boundary.toImage(pixelRatio: 0.5); // Reduce resolution by half
       print('🎥 FrameCapture: Image captured: ${image.width}x${image.height}');
       
-      // Convert to bytes
+      // Use PNG format for compatibility with image preprocessing
       ByteData? byteData = await image.toByteData(format: ui.ImageByteFormat.png);
       
       if (byteData == null) {
@@ -45,7 +45,7 @@ class FrameCaptureService {
       }
 
       final bytes = byteData.buffer.asUint8List();
-      print('🎥 FrameCapture: Frame captured successfully: ${bytes.length} bytes');
+      print('🎥 FrameCapture: Frame captured successfully: ${bytes.length} bytes (PNG format)');
       return bytes;
     } catch (e) {
       print('🎥 FrameCapture: Frame capture failed with error: $e');

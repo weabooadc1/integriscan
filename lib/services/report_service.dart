@@ -390,10 +390,12 @@ class ReportService {
       final detection = detections[i];
       print('Processing detection $i: $detection');
       
+      // Always use RecommendationsService for consistent expert recommendations
       final recommendations = RecommendationsService.getRecommendations(
         detection['damageType'],
         detection['confidence'],
       );
+      print('Using RecommendationsService recommendations: ${recommendations.length} items');
       
       // Generate unique ID for each detection using report ID + index
       final detectionId = '${reportId}_${i}';

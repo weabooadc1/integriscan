@@ -37,6 +37,17 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> {
   final GlobalKey _playerKey = GlobalKey();
   List<Map<String, dynamic>> _currentDetections = [];
   List<Map<String, dynamic>> _detectionHistory = []; // Store all detections for report
+  
+  // CPU optimization variables
+  int _frameSkipCounter = 0;
+  static const int _frameSkipThreshold = 2; // Process every 3rd frame
+  DateTime? _lastFrameProcessed;
+  Uint8List? _lastFrameBytes; // Cache last frame for comparison
+  static const double _frameSimilarityThreshold = 0.95; // Skip similar frames
+  
+  // User configurable analysis settings
+  int _analysisIntervalSeconds = 5; // Default 5 seconds
+  final List<int> _availableIntervals = [3, 5, 10, 15, 30]; // Available intervals
 
   @override
   void initState() {
@@ -219,8 +230,15 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> {
   }
 
   void _startAnalysis() {
-    _analysisTimer = Timer.periodic(const Duration(seconds: 2), (timer) async {
+    // Use configurable interval to reduce CPU load
+    _analysisTimer = Timer.periodic(Duration(seconds: _analysisIntervalSeconds), (timer) async {
       if (!_analysisEnabled || !_isConnected || !mounted) return;
+
+      // Skip analysis if previous one is still running
+      if (_isAnalyzing) {
+        print('⏭️ Skipping analysis - previous analysis still running');
+        return;
+      }
 
       if (mounted) {
         setState(() {
@@ -252,6 +270,15 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> {
 
     try {
       print('=== Starting Real-Time Analysis ===');
+      
+      // CPU Optimization 1: Rate limiting
+      final now = DateTime.now();
+      if (_lastFrameProcessed != null && 
+          now.difference(_lastFrameProcessed!).inMilliseconds < 3000) {
+        print('⏭️ Skipping analysis - rate limit (min 3 seconds between analyses)');
+        return;
+      }
+      
       print('Analysis enabled: $_analysisEnabled, Connected: $_isConnected');
       print('VLC Controller state: playing=${_vlcViewController.value.isPlaying}, initialized=${_vlcViewController.value.isInitialized}');
       
@@ -266,6 +293,14 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> {
         return;
       }
       
+      // CPU Optimization 2: Frame skipping
+      _frameSkipCounter++;
+      if (_frameSkipCounter <= _frameSkipThreshold) {
+        print('⏭️ Skipping frame ${_frameSkipCounter}/${_frameSkipThreshold + 1} for CPU optimization');
+        return;
+      }
+      _frameSkipCounter = 0; // Reset counter
+      
       // Small delay to ensure frame is ready
       await Future.delayed(const Duration(milliseconds: 100));
       
@@ -275,7 +310,17 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> {
       if (frameBytes != null) {
         print('Frame captured successfully: ${frameBytes.length} bytes');
         
-        // Run TFLite inference on the captured frame
+        // CPU Optimization 3: Frame similarity check
+        if (_lastFrameBytes != null && _isFrameSimilar(frameBytes, _lastFrameBytes!)) {
+          print('⏭️ Skipping analysis - frame too similar to previous frame');
+          return;
+        }
+        
+        _lastFrameBytes = frameBytes;
+        _lastFrameProcessed = now;
+        
+        // CPU Optimization 4: Run inference in background isolate would be ideal,
+        // but for now we'll use the existing method with reduced frequency
         final result = await TFLiteService.runInference(frameBytes);
         
         if (result != null && result['isDamageDetected'] != null) {
@@ -292,10 +337,60 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> {
     }
   }
 
+  // CPU Optimization helper: Simple frame similarity check
+  bool _isFrameSimilar(Uint8List frame1, Uint8List frame2) {
+    if (frame1.length != frame2.length) return false;
+    
+    // Simple similarity check: compare file sizes and sample bytes
+    if ((frame1.length - frame2.length).abs() > frame1.length * 0.05) {
+      return false; // More than 5% size difference
+    }
+    
+    // Sample comparison - check every 100th byte for performance
+    int differences = 0;
+    final sampleSize = (frame1.length / 100).round();
+    
+    for (int i = 0; i < frame1.length; i += sampleSize) {
+      if (frame1[i] != frame2[i]) {
+        differences++;
+        if (differences > 10) return false; // Too many differences
+      }
+    }
+    
+    final similarity = 1.0 - (differences / (frame1.length / sampleSize));
+    print('🔍 Frame similarity: ${(similarity * 100).toStringAsFixed(1)}%');
+    
+    return similarity >= _frameSimilarityThreshold;
+  }
+
   Future<void> _processAnalysisResult(Map<String, dynamic> result, Uint8List frameBytes) async {
     final isDamage = result['isDamageDetected'] == true;
     final confidence = result['confidence'] ?? 0.0;
     final damageType = result['damageType'] ?? 'Unknown';
+    
+    // Process image saving outside setState if damage detected
+    String? savedImagePath;
+    Map<String, dynamic>? detectionData;
+    
+    if (isDamage && confidence > 0.5) {
+      // Save frame if damage detected and get the saved path
+      print('🖼️ Saving analyzed frame for damage: $damageType (confidence: $confidence)');
+      savedImagePath = await _saveAnalyzedFrame(frameBytes, damageType, confidence);
+      print('🖼️ Frame saved successfully at: $savedImagePath');
+      
+      detectionData = {
+        'damageType': damageType,
+        'confidence': confidence,
+        'imagePath': savedImagePath, // Use the actual saved path
+        'timestamp': DateTime.now().millisecondsSinceEpoch,
+        'boundingBox': {
+          'x': 0.3, // Center the bounding box for now
+          'y': 0.3,
+          'width': 0.4,
+          'height': 0.4,
+        },
+      };
+    }
     
     if (mounted) {
       setState(() {
@@ -317,17 +412,12 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> {
           
           _currentDetections = [detection];
           
-          // Save frame if damage detected
-          _saveAnalyzedFrame(frameBytes, damageType, confidence);
-          
-          // Store in history for report generation
-          _detectionHistory.add({
-            'damageType': damageType,
-            'confidence': confidence,
-            'imagePath': '', // Will be updated when frame is saved
-            'timestamp': DateTime.now().millisecondsSinceEpoch,
-            'boundingBox': detection['box'],
-          });
+          // Add to detection history
+          if (detectionData != null) {
+            _detectionHistory.add(detectionData);
+            print('📊 Added detection to history. Total detections: ${_detectionHistory.length}');
+            print('📊 Detection data: $detectionData');
+          }
         } else {
           _currentDetections = [];
         }
@@ -342,7 +432,7 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> {
     }
   }
 
-  Future<void> _saveAnalyzedFrame(Uint8List frameBytes, String damageType, double confidence) async {
+  Future<String> _saveAnalyzedFrame(Uint8List frameBytes, String damageType, double confidence) async {
     try {
       // Create a unique filename
       final timestamp = DateTime.now().millisecondsSinceEpoch;
@@ -362,18 +452,13 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> {
       // Save the frame
       await file.writeAsBytes(frameBytes);
       
-      // Update the last detection in history with the saved image path
-      if (_detectionHistory.isNotEmpty) {
-        _detectionHistory.last['imagePath'] = file.path;
-      }
-      
       print('Frame saved: ${file.path}');
+      return file.path; // Return the saved file path
     } catch (e) {
       print('Error saving frame: $e');
+      return ''; // Return empty string on error
     }
   }
-
-
 
   Future<void> _generateReport() async {
     print('Generate report called. Detection history size: ${_detectionHistory.length}');
@@ -388,6 +473,32 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> {
       );
       return;
     }
+
+    // Debug: Log each detection in the history to verify image paths
+    print('=== Detection History Debug ===');
+    for (int i = 0; i < _detectionHistory.length; i++) {
+      final detection = _detectionHistory[i];
+      print('Detection $i:');
+      print('  damageType: ${detection['damageType']}');
+      print('  confidence: ${detection['confidence']}');
+      print('  imagePath: "${detection['imagePath']}" (length: ${detection['imagePath']?.length ?? 0})');
+      print('  timestamp: ${detection['timestamp']}');
+      print('  boundingBox: ${detection['boundingBox']}');
+      
+      // Check if image file actually exists
+      if (detection['imagePath'] != null && detection['imagePath'].isNotEmpty) {
+        final file = File(detection['imagePath']);
+        final exists = await file.exists();
+        print('  imageFile exists: $exists');
+        if (exists) {
+          final size = await file.length();
+          print('  imageFile size: $size bytes');
+        }
+      } else {
+        print('  ❌ WARNING: Empty or null image path!');
+      }
+    }
+    print('=== End Detection History Debug ===');
 
     try {
       final authProvider = Provider.of<AuthProvider>(context, listen: false);
@@ -542,7 +653,13 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> {
     _stopAnalysis();
     _vlcViewController.dispose();
     TFLiteService.dispose();
+    
+    // CPU Optimization: Clear memory caches
     _detectionHistory.clear(); // Clear in-memory detection history on dispose (logout)
+    _currentDetections.clear();
+    _lastFrameBytes = null; // Free cached frame data
+    _lastAnalysisResult = null;
+    
     super.dispose();
   }
 
@@ -874,6 +991,114 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> {
                             ),
                           ),
                         ],
+                      ),
+                      
+                      const SizedBox(height: 16),
+                      
+                      // Performance Settings
+                      Container(
+                        decoration: BoxDecoration(
+                          color: Colors.white,
+                          borderRadius: BorderRadius.circular(16),
+                          boxShadow: [
+                            BoxShadow(
+                              color: Colors.black.withOpacity(0.05),
+                              blurRadius: 10,
+                              offset: const Offset(0, 2),
+                            ),
+                          ],
+                        ),
+                        child: Padding(
+                          padding: const EdgeInsets.all(16),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Row(
+                                children: [
+                                  Icon(
+                                    Icons.tune,
+                                    color: Colors.grey[600],
+                                    size: 16,
+                                  ),
+                                  const SizedBox(width: 8),
+                                  Text(
+                                    'Performance Settings',
+                                    style: TextStyle(
+                                      fontSize: 16,
+                                      fontWeight: FontWeight.w600,
+                                      color: Colors.grey[700],
+                                    ),
+                                  ),
+                                ],
+                              ),
+                              const SizedBox(height: 16),
+                              Row(
+                                children: [
+                                  Expanded(
+                                    child: Column(
+                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                      children: [
+                                        Text(
+                                          'Analysis Interval',
+                                          style: TextStyle(
+                                            fontSize: 14,
+                                            fontWeight: FontWeight.w500,
+                                            color: Colors.grey[700],
+                                          ),
+                                        ),
+                                        const SizedBox(height: 8),
+                                        DropdownButton<int>(
+                                          value: _analysisIntervalSeconds,
+                                          isExpanded: true,
+                                          underline: Container(),
+                                          items: _availableIntervals.map((interval) {
+                                            return DropdownMenuItem<int>(
+                                              value: interval,
+                                              child: Text(
+                                                '$interval seconds',
+                                                style: const TextStyle(fontSize: 14),
+                                              ),
+                                            );
+                                          }).toList(),
+                                          onChanged: (value) {
+                                            if (value != null) {
+                                              setState(() {
+                                                _analysisIntervalSeconds = value;
+                                              });
+                                              
+                                              // Restart analysis with new interval
+                                              if (_analysisEnabled) {
+                                                _stopAnalysis();
+                                                _startAnalysis();
+                                              }
+                                              
+                                              ScaffoldMessenger.of(context).showSnackBar(
+                                                SnackBar(
+                                                  content: Text('Analysis interval updated to $value seconds'),
+                                                  backgroundColor: Colors.blue,
+                                                  duration: const Duration(seconds: 2),
+                                                ),
+                                              );
+                                            }
+                                          },
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                ],
+                              ),
+                              const SizedBox(height: 8),
+                              Text(
+                                'Lower intervals = More frequent analysis but higher CPU usage\nHigher intervals = Better performance and battery life',
+                                style: TextStyle(
+                                  fontSize: 11,
+                                  color: Colors.grey[500],
+                                  height: 1.3,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
                       ),
                       
                       const SizedBox(height: 16),

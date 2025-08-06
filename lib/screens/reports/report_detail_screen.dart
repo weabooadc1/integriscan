@@ -330,16 +330,81 @@ class ReportDetailScreen extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text(
-              'Engineering Recommendations',
-              style: TextStyle(
-                fontSize: 20,
-                fontWeight: FontWeight.bold,
-                color: Colors.black87,
+            Row(
+              children: [
+                Icon(
+                  Icons.engineering,
+                  color: Colors.blue.shade600,
+                  size: 24,
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: const Text(
+                    'Engineering Recommendations',
+                    style: TextStyle(
+                      fontSize: 20,
+                      fontWeight: FontWeight.bold,
+                      color: Colors.black87,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+              decoration: BoxDecoration(
+                color: Colors.blue.shade100,
+                borderRadius: BorderRadius.circular(6),
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(
+                    Icons.verified_user,
+                    size: 16,
+                    color: Colors.blue.shade700,
+                  ),
+                  const SizedBox(width: 4),
+                  Text(
+                    'Professional Engineer Recommendations',
+                    style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w500,
+                      color: Colors.blue.shade700,
+                    ),
+                  ),
+                ],
               ),
             ),
             const SizedBox(height: 16),
-            ...report.detections.map((detection) => _buildRecommendationSection(detection)),
+            if (report.detections.isEmpty) ...[
+              Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: Colors.green.shade50,
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: Colors.green.shade200),
+                ),
+                child: Row(
+                  children: [
+                    Icon(Icons.check_circle, color: Colors.green.shade600, size: 24),
+                    const SizedBox(width: 12),
+                    const Expanded(
+                      child: Text(
+                        'Good news! No damage detected. Your structure appears to be in good condition.',
+                        style: TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ] else ...[
+              ...report.detections.map((detection) => _buildRecommendationSection(detection)),
+            ],
           ],
         ),
       ),
@@ -347,8 +412,39 @@ class ReportDetailScreen extends StatelessWidget {
   }
 
   Widget _buildRecommendationSection(DamageDetection detection) {
+    // Get full recommendation data from RecommendationsService
     final recommendation = RecommendationsService.getRecommendation(detection.damageType);
-    if (recommendation == null) return const SizedBox();
+    
+    if (recommendation == null) {
+      return Container(
+        margin: const EdgeInsets.only(bottom: 16),
+        padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(
+          color: Colors.grey.shade100,
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              '${detection.damageType} - No Recommendations Available',
+              style: const TextStyle(
+                fontWeight: FontWeight.w600,
+                fontSize: 16,
+              ),
+            ),
+            const SizedBox(height: 8),
+            const Text(
+              'No specific recommendations found for this damage type.',
+              style: TextStyle(
+                fontSize: 14,
+                color: Colors.grey,
+              ),
+            ),
+          ],
+        ),
+      );
+    }
 
     return ExpansionTile(
       title: Text(
@@ -386,6 +482,23 @@ class ReportDetailScreen extends StatelessWidget {
                 padding: const EdgeInsets.only(left: 16, top: 4),
                 child: Text('⚠️ $note'),
               )),
+              
+              const SizedBox(height: 16),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                decoration: BoxDecoration(
+                  color: Colors.green.shade100,
+                  borderRadius: BorderRadius.circular(4),
+                ),
+                child: Text(
+                  'Detection Confidence: ${(detection.confidence * 100).toStringAsFixed(1)}%',
+                  style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600,
+                    color: Colors.green.shade700,
+                  ),
+                ),
+              ),
             ],
           ),
         ),

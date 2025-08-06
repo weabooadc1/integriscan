@@ -119,41 +119,146 @@ class RecommendationsService {
     ),
   };
 
+  /// Normalize damage type string to handle variations from AI detection
+  static String _normalizeDamageType(String damageType) {
+    // Remove extra spaces, convert to lowercase, and handle common variations
+    String normalized = damageType.toLowerCase().trim();
+    
+    // Handle potential AI detection variations
+    switch (normalized) {
+      case 'cracks':
+        return 'crack';
+      case 'rusting':
+      case 'corrosion':
+        return 'rust';
+      case 'deform':
+      case 'deformations':
+        return 'deformation';
+      case 'scale':
+      case 'scales':
+      case 'peeling':
+        return 'scaling';
+      default:
+        return normalized;
+    }
+  }
+
   static DamageRecommendation? getRecommendation(String damageType) {
-    return _recommendations[damageType.toLowerCase()];
+    final normalizedType = _normalizeDamageType(damageType);
+    return _recommendations[normalizedType];
   }
 
   static List<String> getRecommendations(String damageType, double confidence) {
-    final rec = _recommendations[damageType.toLowerCase()];
-    if (rec == null) return ['No specific recommendations available for this damage type.'];
+    final normalizedType = _normalizeDamageType(damageType);
+    final rec = _recommendations[normalizedType];
     
-    List<String> recommendations = List.from(rec.recommendations);
+    if (rec == null) {
+      print('⚠️ No recommendations found for damage type: "$damageType" (normalized: "$normalizedType")');
+      print('   Available types: ${_recommendations.keys.toList()}');
+      return ['No specific recommendations available for this damage type.'];
+    }
+    
+    print('✅ Generating detailed engineering recommendations for: ${rec.damageType}');
+    
+    List<String> recommendations = [];
+    
+    // Add engineering overview
+    recommendations.add('=== ENGINEERING ASSESSMENT ===');
+    recommendations.add('Damage Type: ${rec.damageType}');
+    recommendations.add('Severity Level: ${rec.severity}');
+    recommendations.add('Urgency: ${rec.urgency}');
+    recommendations.add('Skill Level Required: ${rec.skillLevel}');
+    recommendations.add('Estimated Cost: ${rec.estimatedCost}');
+    recommendations.add('Time to Complete: ${rec.timeToComplete}');
+    recommendations.add('');
+    
+    // Add step-by-step repair instructions
+    recommendations.add('=== REPAIR INSTRUCTIONS ===');
+    recommendations.addAll(rec.recommendations);
+    recommendations.add('');
+    
+    // Add materials needed
+    recommendations.add('=== MATERIALS REQUIRED ===');
+    recommendations.addAll(rec.materials);
+    recommendations.add('');
+    
+    // Add safety notes
+    recommendations.add('=== SAFETY PRECAUTIONS ===');
+    recommendations.addAll(rec.safetyNotes);
+    recommendations.add('');
     
     // Add confidence-based recommendations
+    recommendations.add('=== DETECTION CONFIDENCE ===');
     if (confidence > 0.9) {
-      recommendations.add('High confidence detection - proceed with repairs immediately');
+      recommendations.add('High confidence detection (${(confidence * 100).toInt()}%) - proceed with repairs immediately');
     } else if (confidence > 0.7) {
-      recommendations.add('Medium confidence detection - verify damage before proceeding');
+      recommendations.add('Medium confidence detection (${(confidence * 100).toInt()}%) - verify damage before proceeding');
     } else {
-      recommendations.add('Low confidence detection - manual inspection recommended');
+      recommendations.add('Low confidence detection (${(confidence * 100).toInt()}%) - manual inspection recommended before repairs');
     }
     
     return recommendations;
   }
 
   static String getSeverity(String damageType, double confidence) {
-    final rec = _recommendations[damageType.toLowerCase()];
-    if (rec == null) return 'Unknown';
+    final normalizedType = _normalizeDamageType(damageType);
+    final rec = _recommendations[normalizedType];
+    
+    if (rec == null) {
+      print('⚠️ No severity data found for damage type: "$damageType" (normalized: "$normalizedType")');
+      return 'Unknown';
+    }
     
     // Adjust severity based on confidence
-    if (confidence < 0.5) return 'Low';
+    if (confidence < 0.5) {
+      return 'Low';
+    }
     
     return rec.severity;
   }
 
   static String getUrgency(String damageType) {
-    final rec = _recommendations[damageType.toLowerCase()];
+    final normalizedType = _normalizeDamageType(damageType);
+    final rec = _recommendations[normalizedType];
     return rec?.urgency ?? 'Unknown';
+  }
+
+  /// Get full engineering recommendation details for a damage type
+  static DamageRecommendation? getFullRecommendation(String damageType) {
+    final normalizedType = _normalizeDamageType(damageType);
+    return _recommendations[normalizedType];
+  }
+
+  /// Get a formatted engineering report for a specific damage detection
+  static Map<String, dynamic> getDetailedEngineeringReport(String damageType, double confidence) {
+    final normalizedType = _normalizeDamageType(damageType);
+    final rec = _recommendations[normalizedType];
+    if (rec == null) {
+      return {
+        'available': false,
+        'message': 'No specific engineering recommendations available for this damage type.'
+      };
+    }
+    
+    return {
+      'available': true,
+      'damageType': rec.damageType,
+      'severity': rec.severity,
+      'urgency': rec.urgency,
+      'skillLevel': rec.skillLevel,
+      'estimatedCost': rec.estimatedCost,
+      'timeToComplete': rec.timeToComplete,
+      'repairInstructions': rec.recommendations,
+      'materialsRequired': rec.materials,
+      'safetyPrecautions': rec.safetyNotes,
+      'confidence': confidence,
+      'confidenceLevel': confidence > 0.9 ? 'High' : confidence > 0.7 ? 'Medium' : 'Low',
+      'confidenceRecommendation': confidence > 0.9 
+        ? 'High confidence detection - proceed with repairs immediately'
+        : confidence > 0.7 
+          ? 'Medium confidence detection - verify damage before proceeding'
+          : 'Low confidence detection - manual inspection recommended before repairs'
+    };
   }
 }
 
