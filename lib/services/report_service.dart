@@ -397,8 +397,8 @@ class ReportService {
       );
       print('Using RecommendationsService recommendations: ${recommendations.length} items');
       
-      // Generate unique ID for each detection using report ID + index
-      final detectionId = '${reportId}_${i}';
+      // Generate short unique ID for each detection (shorter for Firebase Storage paths)
+      final detectionId = 'd${i}_${DateTime.now().millisecondsSinceEpoch.toString().substring(8)}';
       print('Generated detection ID: $detectionId');
       
       damageDetections.add(DamageDetection(

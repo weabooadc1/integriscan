@@ -16,7 +16,7 @@ class FirestoreSyncService {
         'imagePath': d.imagePath,
       }).toList();
       
-      final imageUrls = await FirebaseStorageService.uploadReportImages(detectionMaps, report.id);
+      final imageUrls = await FirebaseStorageService.uploadReportImages(detectionMaps, report.id, report.userId);
       print('Uploaded ${imageUrls.length} images to Firebase Storage');
       
       // Upload main report document
@@ -315,6 +315,16 @@ class FirestoreSyncService {
     try {
       print('Starting Firestore upload for flagged report: ${report.id}');
       
+      // First, upload images to Firebase Storage and get download URLs
+      print('Uploading images to Firebase Storage for flagged report...');
+      final detectionMaps = report.detections.map((d) => {
+        'id': d.id,
+        'imagePath': d.imagePath,
+      }).toList();
+      
+      final imageUrls = await FirebaseStorageService.uploadReportImages(detectionMaps, report.id, report.userId);
+      print('Uploaded ${imageUrls.length} images to Firebase Storage for flagged report');
+      
       final flaggedReportRef = _firestore.collection('flagged_reports').doc(report.id);
       final flaggedReportData = {
         'id': report.id,
@@ -344,7 +354,7 @@ class FirestoreSyncService {
             'reportId': d.reportId,
             'damageType': d.damageType,
             'confidence': d.confidence,
-            'imagePath': d.imagePath,
+            'imagePath': imageUrls[d.id] ?? d.imagePath, // Use Firebase Storage URL if available
             'timestamp': d.timestamp.toIso8601String(),
             'boundingBox': d.boundingBox?.toMap(),
             'severity': d.severity,

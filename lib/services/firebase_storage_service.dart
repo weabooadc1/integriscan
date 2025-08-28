@@ -1,5 +1,6 @@
 import 'dart:io';
 import 'package:firebase_storage/firebase_storage.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:path/path.dart' as path;
 
@@ -7,20 +8,53 @@ class FirebaseStorageService {
   static final FirebaseStorage _storage = FirebaseStorage.instance;
 
   /// Upload an image file to Firebase Storage
-  static Future<String?> uploadImage(String localPath, String reportId, String detectionId) async {
+  static Future<String?> uploadImage(String localPath, String reportId, String detectionId, [String? userId]) async {
     try {
       if (localPath.isEmpty || !File(localPath).existsSync()) {
         print('Image file does not exist: $localPath');
         return null;
       }
 
+      // Debug authentication
+      final currentUser = FirebaseAuth.instance.currentUser;
+      if (currentUser == null) {
+        print('❌ No authenticated user found');
+        return null;
+      }
+      
+      print('✅ Authenticated user: ${currentUser.uid}');
+      print('   Email: ${currentUser.email}');
+      
       final file = File(localPath);
       final fileName = path.basename(localPath);
       
-      // Create a reference to the storage location
-      final storageRef = _storage.ref().child('detection_images/$reportId/$detectionId/$fileName');
+      // Create a simple, short image ID to avoid path length limits
+      // Use a short format: just the base filename with a short timestamp
+      final shortTimestamp = DateTime.now().millisecondsSinceEpoch.toString().substring(7); // Last 6 digits
+      final extension = path.extension(fileName).toLowerCase();
+      final baseName = path.basenameWithoutExtension(fileName);
+      
+      // Keep it short: baseName + short timestamp + extension, max ~20 characters
+      final cleanBaseName = baseName.replaceAll(RegExp(r'[^a-zA-Z0-9]'), '').toLowerCase();
+      final shortBaseName = cleanBaseName.length > 8 ? cleanBaseName.substring(0, 8) : cleanBaseName;
+      final imageId = '${shortBaseName}_$shortTimestamp$extension';
+      
+      // Use authenticated user's ID if userId not provided
+      final effectiveUserId = userId ?? currentUser.uid;
+      
+      // Create a reference to the storage location (3-level path to match rules)
+      final storageRef = _storage.ref().child('report_images/$effectiveUserId/$reportId/$imageId');
+      
+      // Validate path length to avoid Firebase Storage limits (max ~1024 characters)
+      if (storageRef.fullPath.length > 900) {
+        print('❌ Storage path too long: ${storageRef.fullPath.length} characters');
+        print('Path: ${storageRef.fullPath}');
+        return null;
+      }
       
       print('Uploading image to Firebase Storage: $fileName');
+      print('Storage path: ${storageRef.fullPath}');
+      print('User ID: $effectiveUserId, Report ID: $reportId, Image ID: $imageId');
       
       // Upload the file
       final uploadTask = storageRef.putFile(file);
@@ -107,7 +141,7 @@ class FirebaseStorageService {
   }
 
   /// Upload multiple images for a report
-  static Future<Map<String, String>> uploadReportImages(List<Map<String, dynamic>> detections, String reportId) async {
+  static Future<Map<String, String>> uploadReportImages(List<Map<String, dynamic>> detections, String reportId, [String? userId]) async {
     final Map<String, String> imageUrls = {};
     
     for (final detection in detections) {
@@ -115,7 +149,7 @@ class FirebaseStorageService {
       final imagePath = detection['imagePath'] ?? '';
       
       if (imagePath.isNotEmpty && detectionId.isNotEmpty) {
-        final downloadUrl = await uploadImage(imagePath, reportId, detectionId);
+        final downloadUrl = await uploadImage(imagePath, reportId, detectionId, userId);
         if (downloadUrl != null) {
           imageUrls[detectionId] = downloadUrl;
         }
@@ -165,7 +199,6 @@ class FirebaseStorageService {
     // If it's a Firebase URL, try to get local cached version
     if (isFirebaseUrl(originalPath)) {
       final directory = await getApplicationDocumentsDirectory();
-      final fileName = 'downloaded_${reportId}_${detectionId}_*.png';
       final framesDir = Directory('${directory.path}/frames');
       
       if (await framesDir.exists()) {

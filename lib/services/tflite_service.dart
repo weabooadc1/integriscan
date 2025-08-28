@@ -278,7 +278,7 @@ class TFLiteService {
     try {
       // For now, let's use the standard image preprocessing as fallback
       // since raw RGBA processing is complex. We'll focus on other optimizations.
-      print('� Using standard preprocessing for RGBA data');
+      print('🔄 Using standard preprocessing for RGBA data');
       
       // Convert RGBA to a standard image format first
       // This is a simplified approach - in production you might want more sophisticated handling
