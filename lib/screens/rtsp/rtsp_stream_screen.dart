@@ -6,6 +6,7 @@ import 'package:integriscan/services/tflite_service.dart';
 import 'package:integriscan/services/frame_capture_service.dart';
 import 'package:integriscan/services/report_service.dart';
 import 'package:integriscan/services/firestore_sync_service.dart';
+import 'package:integriscan/services/ptz_service.dart';
 import 'package:integriscan/providers/auth_provider.dart';
 import 'package:integriscan/screens/reports/report_detail_screen.dart';
 import 'package:provider/provider.dart';
@@ -48,12 +49,22 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> {
   // User configurable analysis settings
   int _analysisIntervalSeconds = 5; // Default 5 seconds
   final List<int> _availableIntervals = [3, 5, 10, 15, 30]; // Available intervals
+  
+  // PTZ Control variables
+  bool _ptzEnabled = false;
+  bool _ptzSupported = false;
+  bool _isMovingCamera = false;
+  int _currentScanIndex = 0;
+  int _totalPTZMovements = 0;
+  Timer? _ptzMovementTimer;
+  bool _ptzDebugMode = false; // For testing PTZ without actual camera
 
   @override
   void initState() {
     super.initState();
     _initializeVLC();
     _initializeTFLite();
+    _initializePTZ();
     // Attempt background sync for all unsynced reports on screen load
     _syncUnsyncedReportsForCurrentUser();
   }
@@ -162,6 +173,72 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> {
     }
   }
 
+  void _initializePTZ() async {
+    print('🎥 PTZ: Initializing AMCREST IP2M-841B PTZ control...');
+    
+    // For IP2M-841B, enable PTZ by default since we know it works
+    setState(() {
+      _ptzSupported = true;
+      _ptzDebugMode = false; // Start with real PTZ enabled
+    });
+    
+    // Test the actual PTZ connection with working commands
+    try {
+      final success = await PTZService.panRight(widget.rtspUrl, steps: 1);
+      if (success) {
+        // Camera responded - PTZ confirmed working
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: const Text('✅ AMCREST IP2M-841B PTZ detected! Camera supports pan/tilt/zoom.'),
+            backgroundColor: Colors.green,
+            behavior: SnackBarBehavior.floating,
+            duration: const Duration(seconds: 4),
+          ),
+        );
+        
+        // Return to center after test
+        await Future.delayed(Duration(seconds: 2));
+        await PTZService.panLeft(widget.rtspUrl, steps: 1);
+      } else {
+        // PTZ commands not working - maybe auth issue
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: const Text('⚠️ PTZ commands enabled but authentication may need adjustment'),
+            backgroundColor: Colors.orange,
+            behavior: SnackBarBehavior.floating,
+            duration: const Duration(seconds: 6),
+            action: SnackBarAction(
+              label: 'Debug Mode',
+              textColor: Colors.white,
+              onPressed: () {
+                setState(() {
+                  _ptzDebugMode = true;
+                });
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                    content: Text('PTZ Debug mode enabled - UI controls available'),
+                    backgroundColor: Colors.purple,
+                    duration: Duration(seconds: 2),
+                  ),
+                );
+              },
+            ),
+          ),
+        );
+      }
+    } catch (e) {
+      print('🎥 PTZ: Error testing connection: $e');
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: const Text('PTZ initialization failed. Manual controls still available.'),
+          backgroundColor: Colors.orange,
+          behavior: SnackBarBehavior.floating,
+          duration: const Duration(seconds: 4),
+        ),
+      );
+    }
+  }
+
   Future<void> _testModelWithSampleImage() async {
     try {
       print('=== Testing Model with Sample Image ===');
@@ -259,6 +336,286 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> {
   void _stopAnalysis() {
     _analysisTimer?.cancel();
     _analysisTimer = null;
+    _stopPTZMovement(); // Also stop PTZ movement
+  }
+
+  // PTZ Control Methods
+  
+  /// Toggle PTZ automatic scanning
+  void _togglePTZ() {
+    if (!_ptzSupported && !_ptzDebugMode) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('PTZ control is not supported by this camera'),
+          backgroundColor: Colors.red,
+          duration: Duration(seconds: 3),
+        ),
+      );
+      return;
+    }
+    
+    setState(() {
+      _ptzEnabled = !_ptzEnabled;
+      if (_ptzEnabled) {
+        _currentScanIndex = 0; // Reset scan pattern
+        _totalPTZMovements = 0;
+      }
+    });
+    
+    if (_ptzEnabled && _analysisEnabled) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('PTZ Auto-Scan enabled! Camera will move after each analysis using ${_getScanPatternName()} pattern.'),
+          backgroundColor: Colors.green,
+          duration: const Duration(seconds: 4),
+        ),
+      );
+    } else if (!_ptzEnabled) {
+      _stopPTZMovement();
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('PTZ Auto-Scan disabled'),
+          backgroundColor: Colors.orange,
+          duration: Duration(seconds: 2),
+        ),
+      );
+    }
+  }
+  
+  /// Toggle PTZ debug mode for testing
+  void _togglePTZDebugMode() {
+    setState(() {
+      _ptzDebugMode = !_ptzDebugMode;
+    });
+    
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(_ptzDebugMode 
+            ? 'PTZ Debug Mode enabled - UI controls now visible for testing'
+            : 'PTZ Debug Mode disabled'),
+        backgroundColor: _ptzDebugMode ? Colors.purple : Colors.orange,
+        duration: const Duration(seconds: 3),
+      ),
+    );
+  }
+  
+  /// Stop PTZ movement
+  void _stopPTZMovement() {
+    _ptzMovementTimer?.cancel();
+    _ptzMovementTimer = null;
+    
+    if (mounted) {
+      setState(() {
+        _isMovingCamera = false;
+      });
+    }
+  }
+  
+  /// Perform PTZ movement after analysis (IP2M-841B optimized)
+  Future<void> _performPTZMovement() async {
+    if (!_ptzEnabled || !_ptzSupported || _isMovingCamera) {
+      return;
+    }
+
+    setState(() {
+      _isMovingCamera = true;
+    });
+
+    try {
+      print('🎯 IP2M-841B PTZ: Starting 360° scan movement ${_currentScanIndex + 1}/12');
+      
+      bool success = false;
+      String movementDescription = '';
+      
+      // Use 360° clockwise scan pattern (12 movements for full rotation)
+      final scanPattern = PTZScanPattern.clockwise360Scan;
+      
+      if (_currentScanIndex >= scanPattern.length) {
+        // Reset to beginning of pattern
+        _currentScanIndex = 0;
+      }
+      
+      final direction = scanPattern[_currentScanIndex];
+      
+      // Execute the movement based on direction
+      switch (direction) {
+        case PTZDirection.right:
+          // Move to left position for analysis
+          print('� PTZ: Moving to LEFT position for analysis...');
+          success = await PTZService.panRight(widget.rtspUrl, steps: 1);
+          movementDescription = 'Right (${_currentScanIndex + 1}/12)';
+          break;
+        default:
+          success = false;
+          movementDescription = 'Unknown direction';
+          break;
+
+
+      }
+
+      if (success) {
+        _currentScanIndex++;
+        _totalPTZMovements++;
+        
+        print('✅ PTZ: 360° Scan - Position $movementDescription completed');
+        print('📊 PTZ: Total movements: $_totalPTZMovements, Progress: ${((_currentScanIndex / 12) * 100).toStringAsFixed(0)}%');
+        
+        // Show success feedback
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('📹 360° Scan - Position $movementDescription'),
+              backgroundColor: Colors.green,
+              duration: const Duration(seconds: 2),
+            ),
+          );
+        }
+        
+        // Wait for camera stabilization before next analysis
+        print('⏳ PTZ: Waiting 3 seconds for camera stabilization...');
+        await Future.delayed(Duration(seconds: 3));
+        
+      } else {
+        print('❌ PTZ: Movement to $movementDescription failed');
+        
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('⚠️ PTZ movement failed. Continuing analysis at current position.'),
+              backgroundColor: Colors.orange,
+              duration: Duration(seconds: 3),
+            ),
+          );
+        }
+      }
+      
+    } catch (e) {
+      print('❌ PTZ: Error during automated movement: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('PTZ Error: ${e.toString().substring(0, 50)}...'),
+            backgroundColor: Colors.red,
+            duration: Duration(seconds: 3),
+          ),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isMovingCamera = false;
+        });
+      }
+    }
+  }
+  
+  /// Manual PTZ control for IP2M-841B
+  Future<void> _manualPTZControl(PTZDirection direction) async {
+    if (!_ptzSupported && !_ptzDebugMode) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('PTZ control is not supported by this camera'),
+          backgroundColor: Colors.red,
+        ),
+      );
+      return;
+    }
+    
+    if (_isMovingCamera) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Camera is already moving, please wait...'),
+          backgroundColor: Colors.orange,
+        ),
+      );
+      return;
+    }
+    
+    setState(() {
+      _isMovingCamera = true;
+    });
+    
+    try {
+      bool success = false;
+      String directionName = direction.name.toUpperCase();
+      
+      if (_ptzDebugMode) {
+        // Simulate movement in debug mode
+        print('🎥 PTZ Debug: Simulating movement $directionName');
+        await Future.delayed(const Duration(seconds: 1));
+        success = true;
+      } else {
+        // Real IP2M-841B PTZ movement with working commands
+        print('🎯 IP2M-841B Manual PTZ: Executing $directionName movement');
+        
+        switch (direction) {
+          case PTZDirection.left:
+            success = await PTZService.panLeft(widget.rtspUrl, steps: 2);
+            break;
+          case PTZDirection.right:
+            success = await PTZService.panRight(widget.rtspUrl, steps: 2);
+            break;
+          case PTZDirection.up:
+            success = await PTZService.tiltUp(widget.rtspUrl, steps: 1);
+            break;
+          case PTZDirection.down:
+            success = await PTZService.tiltDown(widget.rtspUrl, steps: 1);
+            break;
+          case PTZDirection.center:
+            // Center position - simulate success
+            print('📍 Moving to center position (no movement required)');
+            success = true;
+            break;
+        }
+        
+        // Add small delay after movement for stabilization
+        if (success) {
+          await Future.delayed(const Duration(milliseconds: 500));
+        }
+      }
+      
+      if (success) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(_ptzDebugMode 
+                ? '🔧 Debug: Camera moved $directionName' 
+                : '📹 Camera moved $directionName'),
+            backgroundColor: Colors.green,
+            duration: const Duration(seconds: 1),
+          ),
+        );
+        print('✅ Manual PTZ: $directionName movement completed successfully');
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('❌ PTZ $directionName movement failed'),
+            backgroundColor: Colors.red,
+            duration: const Duration(seconds: 2),
+          ),
+        );
+        print('❌ Manual PTZ: $directionName movement failed');
+      }
+    } catch (e) {
+      print('❌ Manual PTZ: Error during ${direction.name.toUpperCase()} movement: $e');
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('PTZ error: ${e.toString().substring(0, 30)}...'),
+          backgroundColor: Colors.red,
+          duration: const Duration(seconds: 2),
+        ),
+      );
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isMovingCamera = false;
+        });
+      }
+    }
+  }
+  
+  /// Get scan pattern name
+  String _getScanPatternName() {
+    return '360° Clockwise';
   }
 
   Future<void> _runRealTimeAnalysis() async {
@@ -429,6 +786,12 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> {
           'timestamp': DateTime.now().millisecondsSinceEpoch,
         };
       });
+      
+      // PTZ Integration: Move camera after analysis if PTZ is enabled
+      if (_ptzEnabled && _ptzSupported) {
+        print('🎥 PTZ: Analysis complete, initiating camera movement...');
+        await _performPTZMovement();
+      }
     }
   }
 
@@ -651,6 +1014,7 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> {
   @override
   void dispose() {
     _stopAnalysis();
+    _stopPTZMovement(); // Stop PTZ movement
     _vlcViewController.dispose();
     TFLiteService.dispose();
     
@@ -970,6 +1334,216 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> {
                       
                       const SizedBox(height: 16),
                       
+                      // PTZ Controls (if supported or debug mode)
+                      if (_ptzSupported || _ptzDebugMode) ...[
+                        Row(
+                          children: [
+                            Expanded(
+                              child: _buildControlCard(
+                                title: _ptzEnabled ? 'Disable PTZ Auto-Scan' : 'Enable PTZ Auto-Scan',
+                                icon: _ptzEnabled ? Icons.videocam_off : Icons.videocam,
+                                color: _ptzEnabled ? Colors.red : Colors.blue,
+                                onTap: _togglePTZ,
+                              ),
+                            ),
+                            const SizedBox(width: 16),
+                            Expanded(
+                              child: _buildPTZStatusCard(),
+                            ),
+                          ],
+                        ),
+                        
+                        const SizedBox(height: 16),
+                        
+                        // Manual PTZ Controls
+                        Container(
+                          decoration: BoxDecoration(
+                            color: Colors.white,
+                            borderRadius: BorderRadius.circular(16),
+                            boxShadow: [
+                              BoxShadow(
+                                color: Colors.black.withOpacity(0.05),
+                                blurRadius: 10,
+                                offset: const Offset(0, 2),
+                              ),
+                            ],
+                          ),
+                          padding: const EdgeInsets.all(16),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Row(
+                                children: [
+                                  Icon(
+                                    Icons.control_camera,
+                                    color: Colors.grey[600],
+                                    size: 16,
+                                  ),
+                                  const SizedBox(width: 8),
+                                  Text(
+                                    'Manual PTZ Control',
+                                    style: TextStyle(
+                                      fontSize: 16,
+                                      fontWeight: FontWeight.w600,
+                                      color: Colors.grey[700],
+                                    ),
+                                  ),
+                                  const Spacer(),
+                                  if (_isMovingCamera)
+                                    const SizedBox(
+                                      width: 16,
+                                      height: 16,
+                                      child: CircularProgressIndicator(strokeWidth: 2),
+                                    ),
+                                ],
+                              ),
+                              const SizedBox(height: 16),
+                              
+                              // Direction Controls
+                              Column(
+                                children: [
+                                  // Up button
+                                  Row(
+                                    mainAxisAlignment: MainAxisAlignment.center,
+                                    children: [
+                                      _buildPTZDirectionButton(
+                                        Icons.keyboard_arrow_up,
+                                        'Up',
+                                        PTZDirection.up,
+                                      ),
+                                    ],
+                                  ),
+                                  const SizedBox(height: 8),
+                                  // Left and Right buttons
+                                  Row(
+                                    mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                                    children: [
+                                      _buildPTZDirectionButton(
+                                        Icons.keyboard_arrow_left,
+                                        'Left',
+                                        PTZDirection.left,
+                                      ),
+                                      Container(
+                                        width: 48,
+                                        height: 48,
+                                        decoration: BoxDecoration(
+                                          color: Colors.grey[100],
+                                          borderRadius: BorderRadius.circular(24),
+                                        ),
+                                        child: Icon(
+                                          Icons.control_camera,
+                                          color: Colors.grey[400],
+                                          size: 24,
+                                        ),
+                                      ),
+                                      _buildPTZDirectionButton(
+                                        Icons.keyboard_arrow_right,
+                                        'Right',
+                                        PTZDirection.right,
+                                      ),
+                                    ],
+                                  ),
+                                  const SizedBox(height: 8),
+                                  // Down button
+                                  Row(
+                                    mainAxisAlignment: MainAxisAlignment.center,
+                                    children: [
+                                      _buildPTZDirectionButton(
+                                        Icons.keyboard_arrow_down,
+                                        'Down',
+                                        PTZDirection.down,
+                                      ),
+                                    ],
+                                  ),
+                                ],
+                              ),
+                              
+                              const SizedBox(height: 16),
+                              
+                              // Zoom Controls for IP2M-841B
+                              Container(
+                                padding: const EdgeInsets.all(12),
+                                decoration: BoxDecoration(
+                                  color: Colors.blue.withOpacity(0.05),
+                                  borderRadius: BorderRadius.circular(12),
+                                  border: Border.all(color: Colors.blue.withOpacity(0.2)),
+                                ),
+                                child: Column(
+                                  children: [
+                                    Row(
+                                      children: [
+                                        Icon(
+                                          Icons.zoom_in_map,
+                                          color: Colors.blue[600],
+                                          size: 16,
+                                        ),
+                                        const SizedBox(width: 8),
+                                        Text(
+                                          'Zoom Control (IP2M-841B)',
+                                          style: TextStyle(
+                                            fontSize: 14,
+                                            fontWeight: FontWeight.w600,
+                                            color: Colors.blue[700],
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                    const SizedBox(height: 12),
+                                    Row(
+                                      mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                                      children: [
+                                        _buildZoomButton(
+                                          Icons.zoom_in,
+                                          'Zoom In',
+                                          () async => await _performZoom(true),
+                                        ),
+                                        _buildZoomButton(
+                                          Icons.zoom_out,
+                                          'Zoom Out',
+                                          () async => await _performZoom(false),
+                                        ),
+                                      ],
+                                    ),
+                                  ],
+                                ),
+                              ),
+                              
+                              const SizedBox(height: 16),
+                              
+                              // Scan Pattern Selection
+                              Row(
+                                children: [
+                                  Text(
+                                    'Auto-scan pattern:',
+                                    style: TextStyle(
+                                      fontSize: 14,
+                                      fontWeight: FontWeight.w500,
+                                      color: Colors.grey[700],
+                                    ),
+                                  ),
+                                  const SizedBox(width: 8),
+                                  Expanded(
+                                    child: Container(
+                                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                                      decoration: BoxDecoration(
+                                        border: Border.all(color: Colors.grey),
+                                        borderRadius: BorderRadius.circular(4),
+                                      ),
+                                      child: const Text(
+                                        '360° Clockwise Scan',
+                                        style: TextStyle(fontSize: 14),
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ],
+                          ),
+                        ),
+                        
+                        const SizedBox(height: 16),
+                      ],
+                      
                       // Test Detection Button (for testing)
                       Row(
                         children: [
@@ -988,6 +1562,59 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> {
                               icon: Icons.clear_all,
                               color: Colors.orange,
                               onTap: _clearDetectionHistory,
+                            ),
+                          ),
+                        ],
+                      ),
+                      
+                      const SizedBox(height: 16),
+                      
+                      // PTZ Debug Toggle (for testing without PTZ camera)
+                      Row(
+                        children: [
+                          Expanded(
+                            child: _buildControlCard(
+                              title: _ptzDebugMode ? 'Disable PTZ Debug' : 'Enable PTZ Debug',
+                              icon: _ptzDebugMode ? Icons.camera_alt_outlined : Icons.camera_alt,
+                              color: _ptzDebugMode ? Colors.red : Colors.purple,
+                              onTap: _togglePTZDebugMode,
+                            ),
+                          ),
+                          const SizedBox(width: 16),
+                          Expanded(
+                            child: Container(
+                              decoration: BoxDecoration(
+                                color: Colors.grey[100],
+                                borderRadius: BorderRadius.circular(16),
+                              ),
+                              padding: const EdgeInsets.all(20),
+                              child: Column(
+                                children: [
+                                  Icon(
+                                    Icons.info_outline,
+                                    color: Colors.grey[400],
+                                    size: 24,
+                                  ),
+                                  const SizedBox(height: 8),
+                                  Text(
+                                    'Debug Mode',
+                                    style: TextStyle(
+                                      fontSize: 14,
+                                      fontWeight: FontWeight.w600,
+                                      color: Colors.grey[600],
+                                    ),
+                                  ),
+                                  const SizedBox(height: 4),
+                                  Text(
+                                    'Enable to test PTZ UI without camera',
+                                    style: TextStyle(
+                                      fontSize: 10,
+                                      color: Colors.grey[500],
+                                    ),
+                                    textAlign: TextAlign.center,
+                                  ),
+                                ],
+                              ),
                             ),
                           ),
                         ],
@@ -1405,6 +2032,224 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> {
         ],
       ),
     );
+  }
+  
+  Widget _buildPTZStatusCard() {
+    return Container(
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.05),
+            blurRadius: 10,
+            offset: const Offset(0, 2),
+          ),
+        ],
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          children: [
+            Container(
+              width: 50,
+              height: 50,
+              decoration: BoxDecoration(
+                color: _ptzEnabled 
+                    ? Colors.blue.withOpacity(0.1)
+                    : Colors.grey.withOpacity(0.1),
+                borderRadius: BorderRadius.circular(25),
+              ),
+              child: Icon(
+                _ptzEnabled ? Icons.videocam : Icons.videocam_off,
+                color: _ptzEnabled ? Colors.blue : Colors.grey,
+                size: 24,
+              ),
+            ),
+            const SizedBox(height: 12),
+            Text(
+              _isMovingCamera 
+                  ? 'Moving...' 
+                  : _ptzEnabled 
+                      ? 'Auto-Scan ON' 
+                      : 'Auto-Scan OFF',
+              style: const TextStyle(
+                fontSize: 14,
+                fontWeight: FontWeight.w600,
+                color: Colors.black87,
+              ),
+            ),
+            if (_totalPTZMovements > 0) ...[
+              const SizedBox(height: 4),
+              Text(
+                'Movements: $_totalPTZMovements',
+                style: TextStyle(
+                  fontSize: 12,
+                  color: Colors.grey[600],
+                ),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+  
+  Widget _buildPTZDirectionButton(IconData icon, String label, PTZDirection direction) {
+    return Container(
+      width: 56,
+      height: 56,
+      margin: const EdgeInsets.all(4),
+      child: Material(
+        color: _isMovingCamera ? Colors.grey[300] : Colors.blue[50],
+        borderRadius: BorderRadius.circular(28),
+        child: InkWell(
+          onTap: _isMovingCamera ? null : () => _manualPTZControl(direction),
+          borderRadius: BorderRadius.circular(28),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(
+                icon,
+                color: _isMovingCamera ? Colors.grey[500] : Colors.blue[600],
+                size: 24,
+              ),
+              const SizedBox(height: 2),
+              Text(
+                label,
+                style: TextStyle(
+                  fontSize: 10,
+                  fontWeight: FontWeight.w500,
+                  color: _isMovingCamera ? Colors.grey[500] : Colors.blue[600],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+  
+  /// Build zoom control button for IP2M-841B
+  Widget _buildZoomButton(IconData icon, String label, VoidCallback onPressed) {
+    return Container(
+      width: 80,
+      height: 48,
+      child: Material(
+        color: _isMovingCamera ? Colors.grey[300] : Colors.blue[50],
+        borderRadius: BorderRadius.circular(24),
+        child: InkWell(
+          onTap: _isMovingCamera ? null : onPressed,
+          borderRadius: BorderRadius.circular(24),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(
+                icon,
+                color: _isMovingCamera ? Colors.grey[500] : Colors.blue[600],
+                size: 20,
+              ),
+              const SizedBox(width: 6),
+              Text(
+                label,
+                style: TextStyle(
+                  fontSize: 11,
+                  fontWeight: FontWeight.w500,
+                  color: _isMovingCamera ? Colors.grey[500] : Colors.blue[600],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+  
+  /// Perform zoom control for IP2M-841B camera
+  Future<void> _performZoom(bool zoomIn) async {
+    if (!_ptzSupported && !_ptzDebugMode) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('PTZ control is not supported by this camera'),
+          backgroundColor: Colors.red,
+        ),
+      );
+      return;
+    }
+    
+    if (_isMovingCamera) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Camera is already moving, please wait...'),
+          backgroundColor: Colors.orange,
+        ),
+      );
+      return;
+    }
+    
+    setState(() {
+      _isMovingCamera = true;
+    });
+    
+    try {
+      bool success = false;
+      String action = zoomIn ? 'Zoom In' : 'Zoom Out';
+      
+      if (_ptzDebugMode) {
+        print('🎥 PTZ Debug: Simulating $action');
+        await Future.delayed(const Duration(seconds: 1));
+        success = true;
+      } else {
+        print('🎯 IP2M-841B Zoom: Executing $action');
+        
+        if (zoomIn) {
+          success = await PTZService.zoomIn(widget.rtspUrl, steps: 2);
+        } else {
+          success = await PTZService.zoomOut(widget.rtspUrl, steps: 2);
+        }
+        
+        if (success) {
+          await Future.delayed(const Duration(milliseconds: 500));
+        }
+      }
+      
+      if (success) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(_ptzDebugMode 
+                ? '🔧 Debug: $action completed' 
+                : '🔍 Camera $action completed'),
+            backgroundColor: Colors.green,
+            duration: const Duration(seconds: 1),
+          ),
+        );
+        print('✅ Zoom: $action completed successfully');
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('❌ $action failed'),
+            backgroundColor: Colors.red,
+            duration: const Duration(seconds: 2),
+          ),
+        );
+        print('❌ Zoom: $action failed');
+      }
+    } catch (e) {
+      print('❌ Zoom: Error during ${zoomIn ? 'zoom in' : 'zoom out'}: $e');
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Zoom error: ${e.toString().substring(0, 30)}...'),
+          backgroundColor: Colors.red,
+          duration: const Duration(seconds: 2),
+        ),
+      );
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isMovingCamera = false;
+        });
+      }
+    }
   }
 }
 

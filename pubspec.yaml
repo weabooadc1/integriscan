@@ -47,6 +47,8 @@ dependencies:
   tflite_flutter: ^0.9.1 
   image: ^3.0.2
   path_provider: ^2.1.1
+  http: ^1.1.0
+  crypto: ^3.0.6
 
 # Override camera and tflite_flutter to fix Android namespace build errors
 dependency_overrides:
