@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 import 'package:http/http.dart' as http;
 import '../utils/digest_auth.dart';
@@ -111,12 +112,12 @@ class PTZService {
   /// Send PTZ command to AMCREST IP2M-841B camera using Digest Authentication
   /// Uses port 80 specifically for AMCREST cameras
   static Future<bool> _sendCameraCommand(String rtspUrl, String command) async {
-    // Rate limiting to prevent authentication issues
+    // Reduced rate limiting - AMCREST cameras can handle faster commands
     final now = DateTime.now();
     if (_lastCommandTime != null) {
       final timeSinceLastCommand = now.difference(_lastCommandTime!);
-      if (timeSinceLastCommand < Duration(milliseconds: 1000)) {
-        final waitTime = Duration(milliseconds: 1000) - timeSinceLastCommand;
+      if (timeSinceLastCommand < Duration(milliseconds: 500)) {
+        final waitTime = Duration(milliseconds: 500) - timeSinceLastCommand;
         print('⏳ IP2M-841B PTZ: Rate limiting - waiting ${waitTime.inMilliseconds}ms');
         await Future.delayed(waitTime);
       }
@@ -142,22 +143,44 @@ class PTZService {
       final client = http.Client();
       
       try {
-        // Step 1: Get fresh authentication challenge
-        final response1 = await client.get(url).timeout(Duration(seconds: 10));
+        // Step 1: Try without authentication first (some AMCREST setups allow this)
+        print('🔓 PTZ: Trying unauthenticated request first...');
+        final unauthResponse = await client.get(url).timeout(Duration(seconds: 8));
         
-        print('🔐 PTZ: Auth challenge status: ${response1.statusCode}');
+        if (unauthResponse.statusCode == 200) {
+          print('✅ IP2M-841B PTZ: Command successful without authentication');
+          return true;
+        }
         
-        if (response1.statusCode == 401) {
-          final wwwAuth = response1.headers['www-authenticate'];
+        print('🔐 PTZ: Auth required - status: ${unauthResponse.statusCode}');
+        
+        if (unauthResponse.statusCode == 401) {
+          final wwwAuth = unauthResponse.headers['www-authenticate'];
           if (wwwAuth == null) {
             print('❌ PTZ: No WWW-Authenticate header found');
+            // Try basic auth as fallback
+            print('🔓 PTZ: Trying basic authentication...');
+            final basicAuth = 'Basic ${base64Encode(utf8.encode('${cameraInfo['username']}:${cameraInfo['password']}'))}';
+            final basicResponse = await client.get(
+              url,
+              headers: {
+                'Authorization': basicAuth,
+                'User-Agent': 'IntegriScan-PTZ/1.0',
+              },
+            ).timeout(Duration(seconds: 8));
+            
+            if (basicResponse.statusCode == 200) {
+              print('✅ IP2M-841B PTZ: Command successful with basic auth');
+              return true;
+            }
+            print('❌ PTZ: Basic auth failed - status: ${basicResponse.statusCode}');
             return false;
           }
           
           print('🔐 PTZ: Auth challenge: ${wwwAuth.length > 150 ? wwwAuth.substring(0, 150) + '...' : wwwAuth}');
           
           if (wwwAuth.toLowerCase().contains('digest')) {
-            // Let's try a more manual digest auth approach
+            // Digest authentication flow
             final authParams = DigestAuth.parseWWWAuthenticate(wwwAuth);
             final realm = authParams['realm'] ?? '';
             final nonce = authParams['nonce'] ?? '';
@@ -171,17 +194,10 @@ class PTZService {
             
             print('🔑 PTZ: Auth params - realm length: ${realm.length}, nonce: ${nonce.substring(0, 8)}..., qop: $qop');
             
-            // Some camera firmware validates that the same cnonce and nc are
-            // used in both the response computation and the Authorization
-            // header and expect HA2 to be computed against the path only
-            // (no query). Generate a single cnonce and use it for both calls.
             final cnonce = DigestAuth.generateCnonce();
             final nc = '00000001';
-
-            // Use full request URI (path + query) for HA2 to match curl behavior
             final fullUri = '/cgi-bin/ptz.cgi?$command';
 
-            // Generate digest response with shared cnonce/nc using full URI
             final digestResponse = DigestAuth.generateDigestResponse(
               username: cameraInfo['username']!,
               password: cameraInfo['password']!,
@@ -195,8 +211,6 @@ class PTZService {
               nc: nc,
             );
 
-            // Build authorization header using the full request URI in the
-            // header and reusing the same cnonce/nc
             final authHeader = DigestAuth.buildAuthorizationHeader(
               username: cameraInfo['username']!,
               response: digestResponse,
@@ -218,7 +232,7 @@ class PTZService {
                 'Authorization': authHeader,
                 'User-Agent': 'IntegriScan-PTZ/1.0',
               },
-            ).timeout(Duration(seconds: 10));
+            ).timeout(Duration(seconds: 8));
             
             print('🎥 PTZ Response: Status ${response2.statusCode}');
             if (response2.body.isNotEmpty) {
@@ -243,11 +257,11 @@ class PTZService {
           } else {
             print('⚠️ PTZ: Expected digest auth but got: ${wwwAuth.substring(0, 50)}...');
           }
-        } else if (response1.statusCode == 200) {
+        } else if (unauthResponse.statusCode == 200) {
           print('✅ IP2M-841B PTZ: Command successful without authentication');
           return true;
         } else {
-          print('⚠️ IP2M-841B PTZ: Unexpected response - Status ${response1.statusCode}');
+          print('⚠️ IP2M-841B PTZ: Unexpected response - Status ${unauthResponse.statusCode}');
         }
         
       } finally {
@@ -266,18 +280,62 @@ class PTZService {
     return false;
   }
 
+  /// Test basic HTTP connectivity to camera before trying PTZ commands
+  static Future<bool> testCameraConnectivity(String rtspUrl) async {
+    final cameraInfo = _parseRtspUrl(rtspUrl);
+    if (cameraInfo == null) {
+      print('❌ PTZ: Failed to parse RTSP URL for connectivity test');
+      return false;
+    }
+    
+    final httpPort = 80;
+    final testUrl = Uri.parse('http://${cameraInfo['host']}:$httpPort/');
+    
+    try {
+      print('🔌 PTZ: Testing basic HTTP connectivity to ${cameraInfo['host']}:$httpPort');
+      
+      final client = http.Client();
+      final response = await client.get(testUrl).timeout(Duration(seconds: 5));
+      client.close();
+      
+      print('🔌 PTZ: HTTP connectivity test - Status: ${response.statusCode}');
+      
+      // Any response (even 401/404) means the camera is reachable
+      if (response.statusCode == 200 || response.statusCode == 401 || response.statusCode == 404) {
+        print('✅ PTZ: Camera is reachable via HTTP');
+        return true;
+      } else {
+        print('⚠️ PTZ: Unexpected HTTP response: ${response.statusCode}');
+        return false;
+      }
+    } on SocketException catch (e) {
+      print('❌ PTZ: HTTP connectivity failed - ${e.message}');
+      return false;
+    } on TimeoutException {
+      print('❌ PTZ: HTTP connectivity timeout');
+      return false;
+    } catch (e) {
+      print('❌ PTZ: HTTP connectivity error - $e');
+      return false;
+    }
+  }
+
   /// Test if PTZ capabilities are available for the given RTSP URL
   static Future<bool> testPTZSupport(String rtspUrl) async {
     print('🎥 PTZ: Testing AMCREST IP2M-841B PTZ support...');
     
-    // Test with a minimal pan command
-    final success = await _sendCameraCommand(rtspUrl, 'action=start&channel=0&code=Right&arg1=1&arg2=1&arg3=0');
+    // Test with a minimal pan command using correct AMCREST format
+    final success = await _sendCameraCommand(rtspUrl, 'action=start&channel=0&code=Right&arg1=0&arg2=4&arg3=0');
     
     if (success) {
       print('✅ PTZ: AMCREST IP2M-841B PTZ support confirmed');
       // Return to position with left command after delay
       await Future.delayed(Duration(seconds: 1));
-      await _sendCameraCommand(rtspUrl, 'action=start&channel=0&code=Left&arg1=1&arg2=1&arg3=0');
+      await _sendCameraCommand(rtspUrl, 'action=stop&channel=0&code=Right&arg1=0&arg2=4&arg3=0');
+      await Future.delayed(Duration(milliseconds: 500));
+      await _sendCameraCommand(rtspUrl, 'action=start&channel=0&code=Left&arg1=0&arg2=4&arg3=0');
+      await Future.delayed(Duration(seconds: 1));
+      await _sendCameraCommand(rtspUrl, 'action=stop&channel=0&code=Left&arg1=0&arg2=4&arg3=0');
     } else {
       print('❌ PTZ: PTZ commands not responding - check network and credentials');
     }
@@ -285,19 +343,77 @@ class PTZService {
     return success;
   }
 
-  /// Pan the camera left using working directional command
-  /// Uses a short pulse movement to prevent continuous rotation
-  static Future<bool> panLeft(String rtspUrl, {int steps = 1}) async {
-    print('🔄 PTZ: Starting pan left with immediate stop control');
+  /// Test different PTZ command formats to find the working one
+  static Future<bool> testPTZFormats(String rtspUrl) async {
+    print('🧪 PTZ: Testing different command formats for AMCREST compatibility...');
     
-    // Send movement command
-    bool moveSuccess = await _sendCameraCommand(rtspUrl, 'action=start&channel=0&code=Left&arg1=$steps&arg2=$steps&arg3=0');
+    final formats = [
+      // Format 1: Current format
+      'action=start&channel=0&code=Right&arg1=1&arg2=1&arg3=0',
+      
+      // Format 2: Different channel format
+      'action=start&channel=1&code=Right&arg1=1&arg2=1&arg3=0',
+      
+      // Format 3: Continuous movement format
+      'action=start&channel=0&code=ContinuousRightMove&arg1=1&arg2=1&arg3=0',
+      
+      // Format 4: Direction without args
+      'action=start&channel=0&code=Right',
+      
+      // Format 5: Speed-based format
+      'action=start&channel=0&code=Right&speed=1',
+      
+      // Format 6: Different argument names
+      'action=start&channel=0&code=Right&speed=1&step=1',
+      
+      // Format 7: Preset position format
+      'action=start&channel=0&code=GotoPreset&arg1=1',
+      // Format 8: Alternative AMCREST format
+      'action=start&channel=0&code=DirectionRight&arg1=1&arg2=1',
+      
+      // Format 9: PTZ continuous commands
+      'action=start&channel=0&code=ContinuousRightRotation&arg1=1&arg2=1',
+      
+      // Format 10: Simple direction codes
+      'action=start&channel=0&code=PanRight&arg1=1',
+    ];
+    
+    for (int i = 0; i < formats.length; i++) {
+      print('🧪 PTZ: Testing format ${i + 1}/10: ${formats[i]}');
+      final success = await _sendCameraCommand(rtspUrl, formats[i]);
+      
+      if (success) {
+        print('✅ PTZ: Format ${i + 1} worked! Using: ${formats[i]}');
+        
+        // Test stop command for this format
+        String stopCommand = formats[i].replaceAll('action=start', 'action=stop');
+        await Future.delayed(Duration(milliseconds: 1000));
+        await _sendCameraCommand(rtspUrl, stopCommand);
+        
+        return true;
+      }
+      
+      // Wait between tests to avoid overwhelming the camera
+      await Future.delayed(Duration(milliseconds: 800));
+    }
+    
+    print('❌ PTZ: None of the tested formats worked');
+    return false;
+  }
+
+  /// Pan the camera left using correct AMCREST API format
+  /// Uses extended movement duration for better coverage
+  static Future<bool> panLeft(String rtspUrl, {int speed = 4}) async {
+    print('🔄 PTZ: Starting pan left with extended movement duration (speed: $speed)');
+    
+    // Send movement command using correct AMCREST format: arg1=0, arg2=speed[1-8]
+    bool moveSuccess = await _sendCameraCommand(rtspUrl, 'action=start&channel=0&code=Left&arg1=0&arg2=$speed&arg3=0');
     
     if (moveSuccess) {
-      // Very short delay to allow movement to register, then stop immediately
-      await Future.delayed(Duration(milliseconds: 200));
-      // Send direction-specific stop command that matches your working example
-      bool stopSuccess = await _sendCameraCommand(rtspUrl, 'action=stop&channel=0&code=Left&arg1=0&arg2=1&arg3=0');
+      // Extended delay to allow camera to move further before stopping
+      await Future.delayed(Duration(milliseconds: 1300)); // 1.5 seconds for optimal movement coverage
+      // Send stop command using correct format
+      bool stopSuccess = await _sendCameraCommand(rtspUrl, 'action=stop&channel=0&code=Left&arg1=0&arg2=$speed&arg3=0');
       print('🛑 PTZ: Pan left stop command sent - ${stopSuccess ? "SUCCESS" : "FAILED"}');
       return stopSuccess;
     }
@@ -305,19 +421,19 @@ class PTZService {
     return moveSuccess;
   }
   
-  /// Pan the camera right using working directional command
-  /// Uses a short pulse movement to prevent continuous rotation
-  static Future<bool> panRight(String rtspUrl, {int steps = 1}) async {
-    print('🔄 PTZ: Starting pan right with immediate stop control');
+  /// Pan the camera right using correct AMCREST API format
+  /// Uses extended movement duration for better coverage
+  static Future<bool> panRight(String rtspUrl, {int speed = 4}) async {
+    print('🔄 PTZ: Starting pan right with extended movement duration (speed: $speed)');
     
-    // Send movement command
-    bool moveSuccess = await _sendCameraCommand(rtspUrl, 'action=start&channel=0&code=Right&arg1=$steps&arg2=$steps&arg3=0');
+    // Send movement command using correct AMCREST format: arg1=0, arg2=speed[1-8]
+    bool moveSuccess = await _sendCameraCommand(rtspUrl, 'action=start&channel=0&code=Right&arg1=0&arg2=$speed&arg3=0');
     
     if (moveSuccess) {
-      // Very short delay to allow movement to register, then stop immediately
-      await Future.delayed(Duration(milliseconds: 200));
-      // Send direction-specific stop command
-      bool stopSuccess = await _sendCameraCommand(rtspUrl, 'action=stop&channel=0&code=Right&arg1=0&arg2=1&arg3=0');
+      // Extended delay to allow camera to move further before stopping
+      await Future.delayed(Duration(milliseconds: 1300)); // 1.5 seconds for optimal movement coverage
+      // Send stop command using correct format
+      bool stopSuccess = await _sendCameraCommand(rtspUrl, 'action=stop&channel=0&code=Right&arg1=0&arg2=$speed&arg3=0');
       print('🛑 PTZ: Pan right stop command sent - ${stopSuccess ? "SUCCESS" : "FAILED"}');
       return stopSuccess;
     }
@@ -325,28 +441,28 @@ class PTZService {
     return moveSuccess;
   }
   
-  /// Tilt the camera up using working directional command
-  static Future<bool> tiltUp(String rtspUrl, {int steps = 1}) async {
-    // Use working format: arg1=steps, arg2=steps (both must be non-zero)
-    return await _sendCameraCommand(rtspUrl, 'action=start&channel=0&code=Up&arg1=$steps&arg2=$steps&arg3=0');
+  /// Tilt the camera up using correct AMCREST API format
+  static Future<bool> tiltUp(String rtspUrl, {int speed = 4}) async {
+    // Use correct AMCREST format: arg1=0, arg2=speed[1-8]
+    return await _sendCameraCommand(rtspUrl, 'action=start&channel=0&code=Up&arg1=0&arg2=$speed&arg3=0');
   }
   
-  /// Tilt the camera down using working directional command
-  static Future<bool> tiltDown(String rtspUrl, {int steps = 1}) async {
-    // Use working format: arg1=steps, arg2=steps (both must be non-zero)
-    return await _sendCameraCommand(rtspUrl, 'action=start&channel=0&code=Down&arg1=$steps&arg2=$steps&arg3=0');
+  /// Tilt the camera down using correct AMCREST API format
+  static Future<bool> tiltDown(String rtspUrl, {int speed = 4}) async {
+    // Use correct AMCREST format: arg1=0, arg2=speed[1-8]
+    return await _sendCameraCommand(rtspUrl, 'action=start&channel=0&code=Down&arg1=0&arg2=$speed&arg3=0');
   }
   
-  /// Zoom in using working directional command
-  static Future<bool> zoomIn(String rtspUrl, {int steps = 1}) async {
-    // Use working format: arg1=steps, arg2=steps (both must be non-zero)
-    return await _sendCameraCommand(rtspUrl, 'action=start&channel=0&code=ZoomTele&arg1=$steps&arg2=$steps&arg3=0');
+  /// Zoom in using correct AMCREST API format
+  static Future<bool> zoomIn(String rtspUrl, {int multiple = 2}) async {
+    // Use correct AMCREST format: arg1=0, arg2=multiple
+    return await _sendCameraCommand(rtspUrl, 'action=start&channel=0&code=ZoomTele&arg1=0&arg2=$multiple&arg3=0');
   }
   
-  /// Zoom out using working directional command
-  static Future<bool> zoomOut(String rtspUrl, {int steps = 1}) async {
-    // Use working format: arg1=steps, arg2=steps (both must be non-zero)
-    return await _sendCameraCommand(rtspUrl, 'action=start&channel=0&code=ZoomWide&arg1=$steps&arg2=$steps&arg3=0');
+  /// Zoom out using correct AMCREST API format
+  static Future<bool> zoomOut(String rtspUrl, {int multiple = 2}) async {
+    // Use correct AMCREST format: arg1=0, arg2=multiple
+    return await _sendCameraCommand(rtspUrl, 'action=start&channel=0&code=ZoomWide&arg1=0&arg2=$multiple&arg3=0');
   }
 
   /// Micro movement with pulse control for fine-grained PTZ adjustments
@@ -362,16 +478,16 @@ class PTZService {
       // Send movement command based on direction
       switch (direction) {
         case PTZDirection.left:
-          success = await panLeft(rtspUrl, steps: 1);
+          success = await panLeft(rtspUrl, speed: 4);
           break;
         case PTZDirection.right:
-          success = await panRight(rtspUrl, steps: 1);
+          success = await panRight(rtspUrl, speed: 4);
           break;
         case PTZDirection.up:
-          success = await tiltUp(rtspUrl, steps: 1);
+          success = await tiltUp(rtspUrl, speed: 4);
           break;
         case PTZDirection.down:
-          success = await tiltDown(rtspUrl, steps: 1);
+          success = await tiltDown(rtspUrl, speed: 4);
           break;
         case PTZDirection.center:
           // Center is a no-op for micro movements
@@ -415,87 +531,109 @@ class PTZService {
   }
 
   /// Execute automated PTZ workflow for damage analysis
-  /// Moves through positions systematically with analysis delays
-  static Future<bool> executeScanWorkflow(String rtspUrl, List<PTZDirection> scanPattern) async {
-    print('🎯 IP2M-841B: Starting automated scan workflow with ${scanPattern.length} positions');
+  /// Continuous scanning until manually stopped - no position limit
+  static Future<bool> executeScanWorkflow(String rtspUrl, List<PTZDirection> scanPattern, {bool Function()? shouldStop}) async {
+    print('🎯 IP2M-841B: Starting continuous automated scan workflow');
+    print('🔄 Pattern: ${scanPattern.map((d) => d.name).join(' -> ')} (repeating until stopped)');
     
     bool allMovementsSuccessful = true;
+    int totalMovements = 0;
+    int cycleCount = 0;
     
-    for (int i = 0; i < scanPattern.length; i++) {
-      final direction = scanPattern[i];
-      print('🔄 Step ${i + 1}/${scanPattern.length}: Moving ${direction.name.toUpperCase()}');
+    // Continue scanning until shouldStop returns true (user stops it)
+    while (shouldStop == null || !shouldStop()) {
+      cycleCount++;
+      print('🔄 Starting cycle $cycleCount...');
       
-      bool success = false;
-      
-      // Execute movement based on direction
-      switch (direction) {
-        case PTZDirection.left:
-          success = await _sendCameraCommand(rtspUrl, 'action=start&channel=0&code=Left&arg1=2&arg2=2&arg3=0');
-          if (success) {
-            await Future.delayed(Duration(milliseconds: 200));
-            await _sendCameraCommand(rtspUrl, 'action=stop&channel=0&code=Left&arg1=0&arg2=1&arg3=0');
-          }
-          break;
-        case PTZDirection.right:
-          success = await _sendCameraCommand(rtspUrl, 'action=start&channel=0&code=Right&arg1=2&arg2=2&arg3=0');
-          if (success) {
-            await Future.delayed(Duration(milliseconds: 200));
-            await _sendCameraCommand(rtspUrl, 'action=stop&channel=0&code=Right&arg1=0&arg2=1&arg3=0');
-          }
-          break;
-        case PTZDirection.center:
-          success = await _sendCameraCommand(rtspUrl, 'action=start&channel=0&code=Left&arg1=1&arg2=1&arg3=0');
-          if (success) {
-            await Future.delayed(Duration(milliseconds: 200));
-            await _sendCameraCommand(rtspUrl, 'action=stop&channel=0&code=Left&arg1=0&arg2=1&arg3=0');
-          }
-          break;
-        case PTZDirection.up:
-          success = await _sendCameraCommand(rtspUrl, 'action=start&channel=0&code=Up&arg1=1&arg2=1&arg3=0');
-          if (success) {
-            await Future.delayed(Duration(milliseconds: 200));
-            await _sendCameraCommand(rtspUrl, 'action=stop&channel=0&code=Up&arg1=0&arg2=1&arg3=0');
-          }
-          break;
-        case PTZDirection.down:
-          success = await _sendCameraCommand(rtspUrl, 'action=start&channel=0&code=Down&arg1=1&arg2=1&arg3=0');
-          if (success) {
-            await Future.delayed(Duration(milliseconds: 200));
-            await _sendCameraCommand(rtspUrl, 'action=stop&channel=0&code=Down&arg1=0&arg2=1&arg3=0');
-          }
-          break;
+      for (int i = 0; i < scanPattern.length; i++) {
+        // Check if user wants to stop between movements
+        if (shouldStop != null && shouldStop()) {
+          print('🛑 Scan stopped by user after $totalMovements total movements');
+          return allMovementsSuccessful;
+        }
+        
+        final direction = scanPattern[i];
+        totalMovements++;
+        
+        print('🔄 Movement $totalMovements: Moving ${direction.name.toUpperCase()}');
+        
+        bool success = false;
+        
+        // Execute movement based on direction using correct AMCREST API format
+        switch (direction) {
+          case PTZDirection.left:
+            success = await _sendCameraCommand(rtspUrl, 'action=start&channel=0&code=Left&arg1=0&arg2=4&arg3=0');
+            if (success) {
+              await Future.delayed(Duration(milliseconds: 1300)); // Optimized movement duration
+              await _sendCameraCommand(rtspUrl, 'action=stop&channel=0&code=Left&arg1=0&arg2=4&arg3=0');
+            }
+            break;
+          case PTZDirection.right:
+            success = await _sendCameraCommand(rtspUrl, 'action=start&channel=0&code=Right&arg1=0&arg2=4&arg3=0');
+            if (success) {
+              await Future.delayed(Duration(milliseconds: 1300)); // Optimized movement duration
+              await _sendCameraCommand(rtspUrl, 'action=stop&channel=0&code=Right&arg1=0&arg2=4&arg3=0');
+            }
+            break;
+          case PTZDirection.center:
+            // For center, do a small adjustment movement
+            success = await _sendCameraCommand(rtspUrl, 'action=start&channel=0&code=Left&arg1=0&arg2=2&arg3=0');
+            if (success) {
+              await Future.delayed(Duration(milliseconds: 500));
+              await _sendCameraCommand(rtspUrl, 'action=stop&channel=0&code=Left&arg1=0&arg2=2&arg3=0');
+            }
+            break;
+          case PTZDirection.up:
+            success = await _sendCameraCommand(rtspUrl, 'action=start&channel=0&code=Up&arg1=0&arg2=4&arg3=0');
+            if (success) {
+              await Future.delayed(Duration(milliseconds: 2000)); // Extended movement time
+              await _sendCameraCommand(rtspUrl, 'action=stop&channel=0&code=Up&arg1=0&arg2=4&arg3=0');
+            }
+            break;
+          case PTZDirection.down:
+            success = await _sendCameraCommand(rtspUrl, 'action=start&channel=0&code=Down&arg1=0&arg2=4&arg3=0');
+            if (success) {
+              await Future.delayed(Duration(milliseconds: 2000)); // Extended movement time
+              await _sendCameraCommand(rtspUrl, 'action=stop&channel=0&code=Down&arg1=0&arg2=4&arg3=0');
+            }
+            break;
+        }
+        
+        if (success) {
+          print('✅ Movement ${direction.name.toUpperCase()} completed (${totalMovements} total)');
+          
+          // Wait for camera stabilization and analysis
+          print('⏳ Waiting ${_panDelay.inSeconds}s for stabilization and analysis...');
+          await Future.delayed(_panDelay);
+          
+        } else {
+          print('❌ Movement ${direction.name.toUpperCase()} failed');
+          allMovementsSuccessful = false;
+          
+          // Continue with remaining movements even if one fails
+          await Future.delayed(Duration(seconds: 1));
+        }
       }
       
-      if (success) {
-        print('✅ Movement ${direction.name.toUpperCase()} completed');
-        
-        // Wait for camera stabilization and analysis
-        print('⏳ Waiting ${_panDelay.inSeconds}s for stabilization and analysis...');
-        await Future.delayed(_panDelay);
-        
-      } else {
-        print('❌ Movement ${direction.name.toUpperCase()} failed');
-        allMovementsSuccessful = false;
-        
-        // Continue with remaining movements even if one fails
-        await Future.delayed(Duration(seconds: 1));
-      }
+      print('✅ Completed cycle $cycleCount (${totalMovements} total movements)');
+      
+      // Brief pause between cycles
+      await Future.delayed(Duration(milliseconds: 500));
     }
     
-    if (allMovementsSuccessful) {
-      print('✅ IP2M-841B: Scan workflow completed successfully');
-    } else {
-      print('⚠️ IP2M-841B: Scan workflow completed with some failures');
-    }
+    print('🏁 IP2M-841B: Continuous scan workflow completed');
+    print('📊 Total: $cycleCount cycles, $totalMovements movements');
     
     return allMovementsSuccessful;
   }
 
-  /// Execute a complete 360-degree clockwise scan for comprehensive analysis
-  /// Performs 12 movements of 30 degrees each to cover all angles
-  static Future<bool> execute360DegreeScan(String rtspUrl) async {
-    print('🌐 IP2M-841B: Starting 360-degree clockwise scan (12 positions)');
-    return await executeScanWorkflow(rtspUrl, PTZScanPattern.clockwise360Scan);
+  /// Execute a continuous clockwise scan for comprehensive analysis
+  /// Continues indefinitely until stopped by user
+  static Future<bool> execute360DegreeScan(String rtspUrl, {bool Function()? shouldStop}) async {
+    print('🌐 IP2M-841B: Starting continuous clockwise scan (unlimited)');
+    // Simple left-right pattern for continuous scanning
+    final continuousPattern = [PTZDirection.right]; // Just keep moving right
+    return await executeScanWorkflow(rtspUrl, continuousPattern, shouldStop: shouldStop);
   }
 
   /// Move camera to preset position for IP2M-841B
@@ -505,12 +643,12 @@ class PTZService {
     // AMCREST preset positions (adjust based on your camera setup)
     switch (presetNumber) {
       case 1: // Left position
-        return await panLeft(rtspUrl, steps: 1);
+        return await panLeft(rtspUrl, speed: 4);
       case 2: // Center position  
         print('📍 Moving to center position (no command needed)');
         return true;
       case 3: // Right position
-        return await panRight(rtspUrl, steps: 1);
+        return await panRight(rtspUrl, speed: 4);
       default:
         print('⚠️ Invalid preset number: $presetNumber');
         return false;

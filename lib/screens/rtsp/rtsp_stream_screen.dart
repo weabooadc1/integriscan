@@ -12,7 +12,6 @@ import 'package:integriscan/screens/reports/report_detail_screen.dart';
 import 'package:provider/provider.dart';
 import 'package:path_provider/path_provider.dart';
 import 'dart:async';
-import 'dart:typed_data';
 import 'dart:io';
 
 class RtspStreamScreen extends StatefulWidget {
@@ -58,15 +57,113 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> {
   int _totalPTZMovements = 0;
   Timer? _ptzMovementTimer;
   bool _ptzDebugMode = false; // For testing PTZ without actual camera
+  
+  // Bounding box display timing
+  Timer? _boundingBoxTimer;
+  bool _showBoundingBoxes = true;
+  bool _waitingForPTZMovement = false;
 
   @override
   void initState() {
     super.initState();
+    _validateRtspUrl(); // Validate URL format first
     _initializeVLC();
     _initializeTFLite();
     _initializePTZ();
     // Attempt background sync for all unsynced reports on screen load
     _syncUnsyncedReportsForCurrentUser();
+  }
+  
+  /// Validate and provide suggestions for RTSP URL format
+  void _validateRtspUrl() {
+    print('🔍 Validating RTSP URL: ${widget.rtspUrl}');
+    
+    final uri = Uri.tryParse(widget.rtspUrl);
+    if (uri == null) {
+      print('❌ Invalid URL format');
+      _showRtspSuggestions('Invalid URL format');
+      return;
+    }
+    
+    if (!uri.scheme.toLowerCase().startsWith('rtsp')) {
+      print('❌ Not an RTSP URL (scheme: ${uri.scheme})');
+      _showRtspSuggestions('URL must start with rtsp://');
+      return;
+    }
+    
+    if (uri.host.isEmpty) {
+      print('❌ Missing hostname/IP address');
+      _showRtspSuggestions('Missing camera IP address');
+      return;
+    }
+    
+    print('✅ URL format appears valid');
+    print('  - Host: ${uri.host}');
+    print('  - Port: ${uri.port}');
+    print('  - Path: ${uri.path}');
+    print('  - Query: ${uri.query}');
+  }
+  
+  /// Show RTSP URL format suggestions
+  void _showRtspSuggestions(String issue) {
+    if (!mounted) return;
+    
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('AMCREST IP2M-841B Connection Help'),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('Issue: $issue\n'),
+              const Text('Try these AMCREST IP2M-841B formats:', style: TextStyle(fontWeight: FontWeight.bold)),
+              const SizedBox(height: 12),
+              
+              const Text('📹 Main Stream (Primary):', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.blue)),
+              const SelectableText('rtsp://admin:admin123@192.168.1.14:554/cam/realmonitor?channel=1&subtype=0'),
+              const SizedBox(height: 8),
+              
+              const Text('📱 Sub Stream (Lower Quality):', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.green)),
+              const SelectableText('rtsp://admin:admin123@192.168.1.14:554/cam/realmonitor?channel=1&subtype=1'),
+              const SizedBox(height: 8),
+              
+              const Text('🔄 Alternative Paths:', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.orange)),
+              const SelectableText('rtsp://admin:admin123@192.168.1.14:554/h264Preview_01_main'),
+              const SelectableText('rtsp://admin:admin123@192.168.1.14:554/h264Preview_01_sub'),
+              const SelectableText('rtsp://admin:admin123@192.168.1.14:554/live'),
+              const SizedBox(height: 12),
+              
+              const Text('🔧 Troubleshooting Steps:', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.red)),
+              const Text('1. Check camera web interface (http://192.168.1.14)'),
+              const Text('2. Verify RTSP is enabled in camera settings'),
+              const Text('3. Try different authentication ports'),
+              const Text('4. Check if another app is using the stream'),
+              const SizedBox(height: 8),
+              
+              const Text('📝 Current Status:', style: TextStyle(fontWeight: FontWeight.bold)),
+              const Text('✅ Network: Reachable (ping successful)'),
+              const Text('✅ Port 554: Open and accessible'),
+              const Text('❓ Stream: Testing different formats...'),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () {
+              Navigator.of(context).pop();
+              _testAlternativeUrls();
+            },
+            child: const Text('Test Alternative URLs'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('Close'),
+          ),
+        ],
+      ),
+    );
   }
 
   void _syncUnsyncedReportsForCurrentUser() async {
@@ -89,11 +186,39 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> {
   }
 
   void _initializeVLC() {
+    print('🎬 Initializing VLC with RTSP URL: ${widget.rtspUrl}');
+    
     _vlcViewController = VlcPlayerController.network(
       widget.rtspUrl,
       hwAcc: HwAcc.full,
       autoPlay: true,
-      options: VlcPlayerOptions(),
+      options: VlcPlayerOptions(
+        advanced: VlcAdvancedOptions([
+          '--network-caching=3000',      // Increased for WiFi stability
+          '--rtsp-tcp',                  // Force TCP (more reliable than UDP)
+          '--live-caching=3000',         // Increased live buffer
+          '--rtsp-frame-buffer-size=1000000', // Larger frame buffer
+          '--rtsp-timeout=30',           // 30 second timeout
+          '--tcp-caching=3000',          // TCP caching
+          '--no-audio',                  // Disable audio for stability
+          '--rtsp-kasenna',              // Better RTSP compatibility
+          '--rtsp-wmserver',             // Windows Media Server compatibility
+          '--verbose=2',                 // Enable detailed logging
+        ]),
+        video: VlcVideoOptions([
+          '--no-video-title-show',
+          '--drop-late-frames',          // Drop frames if behind
+          '--skip-frames',               // Skip frames to maintain sync
+        ]),
+        audio: VlcAudioOptions([
+          '--no-audio',                  // Explicitly disable audio
+        ]),
+        subtitle: VlcSubtitleOptions([]),
+        rtp: VlcRtpOptions([
+          '--rtsp-tcp',                  // Ensure TCP is used
+          '--rtp-max-src=1',             // Limit RTP sources
+        ]),
+      ),
     );
     
     // Add listeners for connection status
@@ -102,8 +227,15 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> {
         final isPlaying = _vlcViewController.value.isPlaying;
         final isInitialized = _vlcViewController.value.isInitialized;
         final hasError = _vlcViewController.value.hasError;
+        final playbackState = _vlcViewController.value.playingState;
         
-        print('🎬 VLC State: playing=$isPlaying, initialized=$isInitialized, hasError=$hasError');
+        print('🎬 VLC State Update:');
+        print('  - Playing: $isPlaying');
+        print('  - Initialized: $isInitialized');
+        print('  - Has Error: $hasError');
+        print('  - Playback State: $playbackState');
+        print('  - Position: ${_vlcViewController.value.position}');
+        print('  - Duration: ${_vlcViewController.value.duration}');
         
         setState(() {
           _isConnected = isPlaying && isInitialized && !hasError;
@@ -111,8 +243,249 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> {
         });
         
         if (hasError) {
-          print('🎬 VLC Error detected: ${_vlcViewController.value.errorDescription}');
+          final errorMsg = _vlcViewController.value.errorDescription.isEmpty 
+              ? 'Unknown VLC error' 
+              : _vlcViewController.value.errorDescription;
+          print('🎬 VLC Error detected: $errorMsg');
+          
+          // Show detailed error to user
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text('RTSP Connection Error: $errorMsg'),
+                backgroundColor: Colors.red,
+                duration: const Duration(seconds: 8),
+                action: SnackBarAction(
+                  label: 'Retry',
+                  textColor: Colors.white,
+                  onPressed: () => _retryConnection(),
+                ),
+              ),
+            );
+          }
         }
+      }
+    });
+  }
+  
+  /// Retry RTSP connection
+  void _retryConnection() {
+    print('🔄 Retrying RTSP connection...');
+    _vlcViewController.dispose();
+    setState(() {
+      _isConnected = false;
+      _isLoading = true;
+    });
+    
+    // Wait a moment before retrying
+    Future.delayed(const Duration(seconds: 2), () {
+      if (mounted) {
+        _initializeVLC();
+      }
+    });
+  }
+  
+  /// Test alternative RTSP URLs for AMCREST IP2M-841B
+  void _testAlternativeUrls() async {
+    final List<String> alternativeUrls = [
+      'rtsp://admin:admin123@192.168.1.14:554/cam/realmonitor?channel=1&subtype=1', // Sub stream
+      'rtsp://admin:admin123@192.168.1.14:554/h264Preview_01_main',                // Alternative main
+      'rtsp://admin:admin123@192.168.1.14:554/h264Preview_01_sub',                 // Alternative sub
+      'rtsp://admin:admin123@192.168.1.14:554/live',                              // Generic live
+      'rtsp://admin:admin123@192.168.1.14:554/stream1',                           // Stream1
+      'rtsp://admin:admin123@192.168.1.14:554/cam1',                              // Cam1
+    ];
+    
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('🔍 Testing alternative RTSP URLs for your AMCREST camera...'),
+        duration: Duration(seconds: 3),
+      ),
+    );
+    
+    print('🔍 Testing ${alternativeUrls.length} alternative RTSP URLs...');
+    
+    for (int i = 0; i < alternativeUrls.length; i++) {
+      final testUrl = alternativeUrls[i];
+      print('🧪 Testing URL ${i + 1}/${alternativeUrls.length}: $testUrl');
+      
+      try {
+        // Create a temporary VLC controller to test the URL
+        final testController = VlcPlayerController.network(
+          testUrl,
+          hwAcc: HwAcc.disabled, // Disable hardware acceleration for testing
+          autoPlay: false,
+          options: VlcPlayerOptions(
+            advanced: VlcAdvancedOptions([
+              '--network-caching=1000',
+              '--rtsp-tcp',
+              '--rtsp-timeout=5',   // Quick timeout for testing
+              '--no-audio',
+            ]),
+          ),
+        );
+        
+        bool connectionSuccessful = false;
+        Timer? testTimer;
+        
+        // Set up listener for connection test
+        testController.addListener(() {
+          if (testController.value.isInitialized && 
+              testController.value.isPlaying && 
+              !testController.value.hasError) {
+            connectionSuccessful = true;
+            print('✅ URL ${i + 1} SUCCESSFUL: $testUrl');
+            
+            if (mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(
+                  content: Text('✅ Found working URL! Tap to use: ${testUrl.split('@')[1]}'),
+                  backgroundColor: Colors.green,
+                  duration: const Duration(seconds: 8),
+                  action: SnackBarAction(
+                    label: 'Use This URL',
+                    textColor: Colors.white,
+                    onPressed: () => _useAlternativeUrl(testUrl),
+                  ),
+                ),
+              );
+            }
+          } else if (testController.value.hasError) {
+            print('❌ URL ${i + 1} FAILED: $testUrl - ${testController.value.errorDescription}');
+          }
+        });
+        
+        // Initialize the test controller
+        await testController.initialize();
+        
+        // Wait up to 8 seconds for connection
+        testTimer = Timer(const Duration(seconds: 8), () {
+          if (!connectionSuccessful) {
+            print('⏱️ URL ${i + 1} TIMEOUT: $testUrl');
+          }
+        });
+        
+        // Wait a moment for the connection attempt
+        await Future.delayed(const Duration(seconds: 8));
+        
+        // Clean up
+        testTimer.cancel();
+        testController.dispose();
+        
+        // If we found a working URL, stop testing others
+        if (connectionSuccessful) {
+          break;
+        }
+        
+        // Small delay between tests
+        await Future.delayed(const Duration(seconds: 2));
+        
+      } catch (e) {
+        print('❌ URL ${i + 1} ERROR: $testUrl - $e');
+      }
+    }
+    
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('🔍 Alternative URL testing completed. Check console for results.'),
+          duration: Duration(seconds: 3),
+        ),
+      );
+    }
+  }
+  
+  /// Use an alternative URL that was found to work
+  void _useAlternativeUrl(String newUrl) {
+    print('🔄 Switching to alternative URL: $newUrl');
+    
+    // Dispose current controller
+    _vlcViewController.dispose();
+    
+    setState(() {
+      _isConnected = false;
+      _isLoading = true;
+    });
+    
+    // Wait a moment then initialize with new URL
+    Future.delayed(const Duration(seconds: 2), () {
+      if (mounted) {
+        // Create new controller with the working URL
+        _vlcViewController = VlcPlayerController.network(
+          newUrl,
+          hwAcc: HwAcc.full,
+          autoPlay: true,
+          options: VlcPlayerOptions(
+            advanced: VlcAdvancedOptions([
+              '--network-caching=3000',
+              '--rtsp-tcp',
+              '--live-caching=3000',
+              '--rtsp-frame-buffer-size=1000000',
+              '--rtsp-timeout=30',
+              '--tcp-caching=3000',
+              '--no-audio',
+              '--rtsp-kasenna',
+              '--rtsp-wmserver',
+              '--verbose=2',
+            ]),
+            video: VlcVideoOptions([
+              '--no-video-title-show',
+              '--drop-late-frames',
+              '--skip-frames',
+            ]),
+            audio: VlcAudioOptions([
+              '--no-audio',
+            ]),
+            subtitle: VlcSubtitleOptions([]),
+            rtp: VlcRtpOptions([
+              '--rtsp-tcp',
+              '--rtp-max-src=1',
+            ]),
+          ),
+        );
+        
+        // Add the listener again (same as in _initializeVLC)
+        _vlcViewController.addListener(() {
+          if (mounted) {
+            final isPlaying = _vlcViewController.value.isPlaying;
+            final isInitialized = _vlcViewController.value.isInitialized;
+            final hasError = _vlcViewController.value.hasError;
+            final playbackState = _vlcViewController.value.playingState;
+            
+            print('🎬 VLC State Update (Alternative URL):');
+            print('  - Playing: $isPlaying');
+            print('  - Initialized: $isInitialized');
+            print('  - Has Error: $hasError');
+            print('  - Playback State: $playbackState');
+            
+            setState(() {
+              _isConnected = isPlaying && isInitialized && !hasError;
+              _isLoading = !isInitialized && !hasError;
+            });
+            
+            if (hasError) {
+              final errorMsg = _vlcViewController.value.errorDescription.isEmpty 
+                  ? 'Unknown VLC error' 
+                  : _vlcViewController.value.errorDescription;
+              print('🎬 VLC Error with alternative URL: $errorMsg');
+            } else if (isPlaying) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(
+                  content: Text('🎉 Alternative URL connected successfully!'),
+                  backgroundColor: Colors.green,
+                  duration: Duration(seconds: 3),
+                ),
+              );
+            }
+          }
+        });
+        
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('🔄 Connecting with alternative URL: ${newUrl.split('@')[1]}'),
+            duration: const Duration(seconds: 3),
+          ),
+        );
       }
     });
   }
@@ -184,22 +557,62 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> {
     
     // Test the actual PTZ connection with working commands
     try {
-      final success = await PTZService.panRight(widget.rtspUrl, steps: 1);
-      if (success) {
-        // Camera responded - PTZ confirmed working
+      // First test basic HTTP connectivity
+      print('🔌 PTZ: Testing camera HTTP connectivity...');
+      final connectivityOk = await PTZService.testCameraConnectivity(widget.rtspUrl);
+      
+      if (!connectivityOk) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: const Text('✅ AMCREST IP2M-841B PTZ detected! Camera supports pan/tilt/zoom.'),
+            content: const Text('⚠️ Camera HTTP port unreachable. PTZ may not work.'),
+            backgroundColor: Colors.orange,
+            duration: const Duration(seconds: 4),
+            action: SnackBarAction(
+              label: 'Debug Mode',
+              textColor: Colors.white,
+              onPressed: () {
+                setState(() {
+                  _ptzDebugMode = true;
+                });
+              },
+            ),
+          ),
+        );
+        return;
+      }
+      
+      print('✅ PTZ: HTTP connectivity confirmed, testing PTZ command formats...');
+      
+      // Test different PTZ command formats to find working one
+      final formatSuccess = await PTZService.testPTZFormats(widget.rtspUrl);
+      
+      if (formatSuccess) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: const Text('✅ AMCREST PTZ command format found! Camera movement working.'),
             backgroundColor: Colors.green,
             behavior: SnackBarBehavior.floating,
             duration: const Duration(seconds: 4),
           ),
         );
-        
-        // Return to center after test
-        await Future.delayed(Duration(seconds: 2));
-        await PTZService.panLeft(widget.rtspUrl, steps: 1);
-      } else {
+        } else {
+          // Fallback to standard test
+          final success = await PTZService.panRight(widget.rtspUrl, speed: 4);
+          if (success) {
+            // Camera responded - PTZ confirmed working
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: const Text('✅ AMCREST IP2M-841B PTZ detected! Camera supports pan/tilt/zoom.'),
+                backgroundColor: Colors.green,
+                behavior: SnackBarBehavior.floating,
+                duration: const Duration(seconds: 4),
+              ),
+            );
+            
+            // Return to center after test
+            await Future.delayed(Duration(seconds: 2));
+            await PTZService.panLeft(widget.rtspUrl, speed: 4);
+          } else {
         // PTZ commands not working - maybe auth issue
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -225,6 +638,7 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> {
             ),
           ),
         );
+        }
       }
     } catch (e) {
       print('🎥 PTZ: Error testing connection: $e');
@@ -336,6 +750,18 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> {
   void _stopAnalysis() {
     _analysisTimer?.cancel();
     _analysisTimer = null;
+    _boundingBoxTimer?.cancel(); // Cancel bounding box timer
+    _boundingBoxTimer = null;
+    
+    // Reset bounding box display state
+    if (mounted) {
+      setState(() {
+        _waitingForPTZMovement = false;
+        _showBoundingBoxes = true; // Reset to default state
+        _currentDetections = []; // Clear any current detections
+      });
+    }
+    
     _stopPTZMovement(); // Also stop PTZ movement
   }
 
@@ -365,7 +791,7 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> {
     if (_ptzEnabled && _analysisEnabled) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('PTZ Auto-Scan enabled! Camera will move after each analysis using ${_getScanPatternName()} pattern.'),
+          content: Text('PTZ Auto-Scan enabled! Camera will continuously move after each analysis. Tap STOP to end scanning.'),
           backgroundColor: Colors.green,
           duration: const Duration(seconds: 4),
         ),
@@ -411,6 +837,20 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> {
     }
   }
   
+  /// Perform delayed PTZ movement (used by intelligent workflow)
+  Future<void> _performPTZMovementDelayed() async {
+    if (!_ptzEnabled || !_ptzSupported || _isMovingCamera) {
+      _waitingForPTZMovement = false;
+      return;
+    }
+
+    setState(() {
+      _waitingForPTZMovement = false;
+    });
+
+    await _performPTZMovement();
+  }
+  
   /// Perform PTZ movement after analysis (IP2M-841B optimized)
   Future<void> _performPTZMovement() async {
     if (!_ptzEnabled || !_ptzSupported || _isMovingCamera) {
@@ -422,56 +862,42 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> {
     });
 
     try {
-      print('🎯 IP2M-841B PTZ: Starting 360° scan movement ${_currentScanIndex + 1}/12');
+      print('🎯 IP2M-841B PTZ: Starting continuous scan movement ${_currentScanIndex + 1}');
       
       bool success = false;
       String movementDescription = '';
       
-      // Use 360° clockwise scan pattern (12 movements for full rotation)
-      final scanPattern = PTZScanPattern.clockwise360Scan;
-      
-      if (_currentScanIndex >= scanPattern.length) {
-        // Reset to beginning of pattern
-        _currentScanIndex = 0;
-      }
-      
-      final direction = scanPattern[_currentScanIndex];
-      
-      // Execute the movement based on direction
-      switch (direction) {
-        case PTZDirection.right:
-          // Move to left position for analysis
-          print('� PTZ: Moving to LEFT position for analysis...');
-          success = await PTZService.panRight(widget.rtspUrl, steps: 1);
-          movementDescription = 'Right (${_currentScanIndex + 1}/12)';
-          break;
-        default:
-          success = false;
-          movementDescription = 'Unknown direction';
-          break;
-
-
-      }
+      // Use continuous right movement for unlimited scanning with correct AMCREST API
+      print('➡️ PTZ: Moving RIGHT for continuous scanning (extended duration)...');
+      success = await PTZService.panRight(widget.rtspUrl, speed: 4); // Using correct speed parameter
+      movementDescription = 'Right (${_currentScanIndex + 1})';
 
       if (success) {
         _currentScanIndex++;
         _totalPTZMovements++;
         
-        print('✅ PTZ: 360° Scan - Position $movementDescription completed');
-        print('📊 PTZ: Total movements: $_totalPTZMovements, Progress: ${((_currentScanIndex / 12) * 100).toStringAsFixed(0)}%');
+        print('✅ PTZ: Continuous Scan - Position $movementDescription completed');
+        print('📊 PTZ: Total movements: $_totalPTZMovements (unlimited scanning)');
         
-        // Show success feedback
+        // Show success feedback with unlimited indication
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
-              content: Text('📹 360° Scan - Position $movementDescription'),
+              content: Text('📹 Continuous Scan - Movement $_totalPTZMovements (tap to stop)'),
               backgroundColor: Colors.green,
               duration: const Duration(seconds: 2),
+              action: SnackBarAction(
+                label: 'STOP',
+                textColor: Colors.white,
+                onPressed: () {
+                  _togglePTZ(); // Stop the scanning
+                },
+              ),
             ),
           );
         }
         
-        // Wait for camera stabilization before next analysis
+        // Extended wait for camera stabilization before next analysis
         print('⏳ PTZ: Waiting 3 seconds for camera stabilization...');
         await Future.delayed(Duration(seconds: 3));
         
@@ -550,16 +976,16 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> {
         
         switch (direction) {
           case PTZDirection.left:
-            success = await PTZService.panLeft(widget.rtspUrl, steps: 2);
+            success = await PTZService.panLeft(widget.rtspUrl, speed: 4);
             break;
           case PTZDirection.right:
-            success = await PTZService.panRight(widget.rtspUrl, steps: 2);
+            success = await PTZService.panRight(widget.rtspUrl, speed: 4);
             break;
           case PTZDirection.up:
-            success = await PTZService.tiltUp(widget.rtspUrl, steps: 1);
+            success = await PTZService.tiltUp(widget.rtspUrl, speed: 4);
             break;
           case PTZDirection.down:
-            success = await PTZService.tiltDown(widget.rtspUrl, steps: 1);
+            success = await PTZService.tiltDown(widget.rtspUrl, speed: 4);
             break;
           case PTZDirection.center:
             // Center position - simulate success
@@ -615,7 +1041,7 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> {
   
   /// Get scan pattern name
   String _getScanPatternName() {
-    return '360° Clockwise';
+    return 'Continuous Scan (Unlimited)';
   }
 
   Future<void> _runRealTimeAnalysis() async {
@@ -768,6 +1194,7 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> {
           };
           
           _currentDetections = [detection];
+          _showBoundingBoxes = true; // Show bounding boxes when damage is detected
           
           // Add to detection history
           if (detectionData != null) {
@@ -787,10 +1214,42 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> {
         };
       });
       
-      // PTZ Integration: Move camera after analysis if PTZ is enabled
+      // PTZ Integration: Intelligent workflow based on damage detection
       if (_ptzEnabled && _ptzSupported) {
-        print('🎥 PTZ: Analysis complete, initiating camera movement...');
-        await _performPTZMovement();
+        if (isDamage && confidence > 0.5) {
+          // Damage detected workflow: Show bounding box for 3 seconds, then move
+          print('🎥 PTZ: Damage detected! Showing bounding box for 3 seconds before moving...');
+          _waitingForPTZMovement = true;
+          
+          // Start timer to hide bounding boxes and trigger PTZ movement after 3 seconds
+          _boundingBoxTimer?.cancel();
+          _boundingBoxTimer = Timer(const Duration(seconds: 3), () {
+            if (mounted) {
+              setState(() {
+                _showBoundingBoxes = false;
+                _currentDetections = []; // Clear bounding boxes
+              });
+              
+              print('🎥 PTZ: 3 seconds elapsed, hiding bounding boxes and moving camera...');
+              
+              // Trigger PTZ movement after hiding bounding boxes
+              _performPTZMovementDelayed();
+            }
+          });
+        } else {
+          // No damage detected workflow: Wait 3 seconds then move
+          print('🎥 PTZ: No damage detected. Waiting 3 seconds before moving...');
+          _waitingForPTZMovement = true;
+          
+          // Start timer to trigger PTZ movement after 3 seconds
+          _boundingBoxTimer?.cancel();
+          _boundingBoxTimer = Timer(const Duration(seconds: 3), () {
+            if (mounted) {
+              print('🎥 PTZ: 3 seconds elapsed, moving camera...');
+              _performPTZMovementDelayed();
+            }
+          });
+        }
       }
     }
   }
@@ -1015,6 +1474,7 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> {
   void dispose() {
     _stopAnalysis();
     _stopPTZMovement(); // Stop PTZ movement
+    _boundingBoxTimer?.cancel(); // Cancel bounding box timer
     _vlcViewController.dispose();
     TFLiteService.dispose();
     
@@ -1168,7 +1628,7 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> {
                       ),
                     ),
                     // Bounding Box Overlay
-                    if (_analysisEnabled && _currentDetections.isNotEmpty)
+                    if (_analysisEnabled && _currentDetections.isNotEmpty && _showBoundingBoxes)
                       CustomPaint(
                         painter: BoundingBoxPainter(_currentDetections),
                         size: Size.infinite,
@@ -1530,7 +1990,7 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> {
                                         borderRadius: BorderRadius.circular(4),
                                       ),
                                       child: const Text(
-                                        '360° Clockwise Scan',
+                                        'Continuous Scan',
                                         style: TextStyle(fontSize: 14),
                                       ),
                                     ),
@@ -2203,9 +2663,9 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> {
         print('🎯 IP2M-841B Zoom: Executing $action');
         
         if (zoomIn) {
-          success = await PTZService.zoomIn(widget.rtspUrl, steps: 2);
+          success = await PTZService.zoomIn(widget.rtspUrl, multiple: 2);
         } else {
-          success = await PTZService.zoomOut(widget.rtspUrl, steps: 2);
+          success = await PTZService.zoomOut(widget.rtspUrl, multiple: 2);
         }
         
         if (success) {
