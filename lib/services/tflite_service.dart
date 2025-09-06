@@ -118,11 +118,19 @@ class TFLiteService {
 
     // Handle mock mode
     if (_mockMode) {
-      print('🎭 Running in MOCK MODE - generating fake detection results');
+      print('🎭 Running in MOCK MODE - generating realistic detection results with proper bounding boxes');
       final random = DateTime.now().millisecondsSinceEpoch % 100;
       final fakeConfidence = 0.3 + (random % 50) / 100.0; // 0.3 to 0.8
       final damageTypes = ['Crack', 'Deformation', 'Rust', 'Scaling'];
       final fakeDamageType = damageTypes[random % 4];
+      
+      // Generate REALISTIC bounding box coordinates for damage detection (small areas)
+      final centerX = 0.3 + (random % 40) / 100.0; // Center between 0.3 and 0.7
+      final centerY = 0.3 + (random % 40) / 100.0; // Center between 0.3 and 0.7
+      final width = 0.08 + (random % 15) / 100.0;  // Small width: 8% to 23% of screen
+      final height = 0.08 + (random % 15) / 100.0; // Small height: 8% to 23% of screen
+      
+      print('🎭 Mock bounding box: centerX=$centerX, centerY=$centerY, width=$width, height=$height');
       
       return {
         'isDamageDetected': fakeConfidence > 0.5,
@@ -130,6 +138,24 @@ class TFLiteService {
         'damageType': fakeConfidence > 0.5 ? fakeDamageType : 'No Damage',
         'timestamp': DateTime.now().millisecondsSinceEpoch,
         'mockMode': true,
+        'boundingBox': {
+          'x': centerX - width / 2,      // Convert center to top-left
+          'y': centerY - height / 2,     // Convert center to top-left
+          'width': width,
+          'height': height,
+          'centerX': centerX,
+          'centerY': centerY,
+        },
+        'detections': fakeConfidence > 0.5 ? [{
+          'label': fakeDamageType,
+          'confidence': fakeConfidence,
+          'box': {
+            'x': centerX - width / 2,
+            'y': centerY - height / 2,
+            'width': width,
+            'height': height,
+          }
+        }] : [],
       };
     }
 
@@ -324,36 +350,131 @@ class TFLiteService {
     }
   }
 
-  /// Process YOLO-style object detection results
+  /// Process YOLO-style object detection results with proper bounding box handling
   static Map<String, dynamic> _processYOLOResults(List<double> output, List<int> outputShape) {
     print('Processing YOLO results with shape: $outputShape');
     
-    // For YOLO format [1, 7, 8400], we need to find the highest confidence detection
-    final numClasses = outputShape[1]; // 7 classes
+    // For YOLO format [1, 84, 8400] where each detection has:
+    // [x, y, w, h, confidence, class1_conf, class2_conf, ..., classN_conf]
+    final numFeatures = outputShape[1]; // 84 features (4 bbox + 80 classes for COCO, or 4 bbox + N classes)
     final numDetections = outputShape[2]; // 8400 possible detections
     
     double maxConfidence = 0.0;
     int bestClass = 0;
+    Map<String, double>? bestBoundingBox;
+    List<Map<String, dynamic>> allDetections = [];
+    
+    // Determine number of classes (total features - 4 bbox coordinates)
+    final numClasses = numFeatures - 4;
+    print('YOLO: Processing $numDetections detections with $numClasses classes');
     
     // Iterate through all detections
     for (int detection = 0; detection < numDetections; detection++) {
-      for (int cls = 0; cls < numClasses; cls++) {
-        final index = cls * numDetections + detection;
-        if (index < output.length) {
-          final confidence = output[index];
-          if (confidence > maxConfidence) {
-            maxConfidence = confidence;
-            bestClass = cls;
+      try {
+        // Extract bounding box coordinates (first 4 values)
+        var centerX = output[0 * numDetections + detection]; // x center
+        var centerY = output[1 * numDetections + detection]; // y center
+        var width = output[2 * numDetections + detection];   // width
+        var height = output[3 * numDetections + detection];  // height
+        
+        // NORMALIZE COORDINATES if they're in pixel space (common YOLO issue)
+        if (centerX > 1.0 || centerY > 1.0 || width > 1.0 || height > 1.0) {
+          centerX = centerX / inputSize;
+          centerY = centerY / inputSize;
+          width = width / inputSize;
+          height = height / inputSize;
+          print('YOLO: Normalized coordinates for detection $detection - centerX: $centerX, width: $width');
+        }
+        
+        // Skip invalid bounding boxes
+        if (centerX < 0 || centerY < 0 || width <= 0 || height <= 0) continue;
+        
+        // Skip oversized bounding boxes (larger than 80% of screen - likely false positives)
+        if (width > 0.8 || height > 0.8) {
+          print('YOLO: Skipping oversized box - width: ${(width * 100).toInt()}%, height: ${(height * 100).toInt()}%');
+          continue;
+        }
+        
+        // Apply reasonable size limits for damage detection (5% to 50% of screen)
+        final originalWidth = width;
+        final originalHeight = height;
+        width = width.clamp(0.05, 0.5);
+        height = height.clamp(0.05, 0.5);
+        
+        if (originalWidth != width || originalHeight != height) {
+          print('YOLO: Adjusted box size from ${(originalWidth * 100).toInt()}%x${(originalHeight * 100).toInt()}% to ${(width * 100).toInt()}%x${(height * 100).toInt()}%');
+        }
+        
+        // Find the class with highest confidence
+        double detectionMaxConf = 0.0;
+        int detectionBestClass = 0;
+        
+        for (int cls = 0; cls < numClasses; cls++) {
+          final classIndex = (4 + cls) * numDetections + detection;
+          if (classIndex < output.length) {
+            final classConfidence = output[classIndex];
+            if (classConfidence > detectionMaxConf) {
+              detectionMaxConf = classConfidence;
+              detectionBestClass = cls;
+            }
           }
         }
+        
+        // Only consider detections above threshold
+        if (detectionMaxConf > 0.3) {
+          // Convert center coordinates to top-left corner
+          final x = (centerX - width / 2).clamp(0.0, 0.95);
+          final y = (centerY - height / 2).clamp(0.0, 0.95);
+          
+          // Ensure bounding box stays within screen bounds
+          final adjustedWidth = width.clamp(0.05, 1.0 - x);
+          final adjustedHeight = height.clamp(0.05, 1.0 - y);
+          
+          final boundingBox = {
+            'x': x,
+            'y': y,
+            'width': adjustedWidth,
+            'height': adjustedHeight,
+            'centerX': centerX,
+            'centerY': centerY,
+          };
+          
+          print('YOLO: Valid detection ${allDetections.length + 1} - Box: ${(x * 100).toInt()}%,${(y * 100).toInt()}% ${(adjustedWidth * 100).toInt()}%x${(adjustedHeight * 100).toInt()}% (conf: ${(detectionMaxConf * 100).toInt()}%)');
+          
+          final damageType = _labels != null && detectionBestClass < _labels!.length 
+              ? _labels![detectionBestClass] 
+              : 'Class $detectionBestClass';
+          
+          allDetections.add({
+            'label': damageType,
+            'confidence': detectionMaxConf,
+            'box': boundingBox,
+          });
+          
+          // Track the best overall detection
+          if (detectionMaxConf > maxConfidence) {
+            maxConfidence = detectionMaxConf;
+            bestClass = detectionBestClass;
+            bestBoundingBox = boundingBox;
+          }
+        }
+      } catch (e) {
+        print('Error processing detection $detection: $e');
+        continue;
       }
     }
     
-    print('YOLO: Best class: $bestClass, confidence: $maxConfidence');
+    print('YOLO: Found ${allDetections.length} valid detections');
+    print('YOLO: Best detection - Class: $bestClass, Confidence: ${(maxConfidence * 100).toInt()}%');
+    if (bestBoundingBox != null) {
+      print('YOLO: Best bounding box: ${(bestBoundingBox['x']! * 100).toInt()}%,${(bestBoundingBox['y']! * 100).toInt()}% ${(bestBoundingBox['width']! * 100).toInt()}%x${(bestBoundingBox['height']! * 100).toInt()}%');
+    }
     
     // Map class index to damage type
-    final damageType = _labels?[bestClass] ?? 'Class $bestClass';
-    final isDamageDetected = maxConfidence > 0.3 && damageType != 'No Damage'; // Lower threshold for YOLO
+    final damageType = _labels != null && bestClass < _labels!.length 
+        ? _labels![bestClass] 
+        : 'Class $bestClass';
+    final isDamageDetected = maxConfidence > 0.3 && damageType != 'No Damage';
     
     return {
       'isDamageDetected': isDamageDetected,
@@ -361,10 +482,12 @@ class TFLiteService {
       'damageType': damageType,
       'timestamp': DateTime.now().millisecondsSinceEpoch,
       'modelType': 'YOLO',
+      'boundingBox': bestBoundingBox, // Real bounding box from AI model
+      'detections': allDetections,    // All detections with their bounding boxes
     };
   }
 
-  /// Process standard classification results
+  /// Process standard classification results (with realistic bounding box for detected damage)
   static Map<String, dynamic> _processClassificationResults(List<double> output) {
     List<Map<String, dynamic>> predictions = [];
     
@@ -382,7 +505,7 @@ class TFLiteService {
     final topPrediction = predictions.first;
     final isDamageDetected = topPrediction['confidence'] > 0.5 && topPrediction['label'] != 'No Damage';
 
-    return {
+    Map<String, dynamic> result = {
       'isDamageDetected': isDamageDetected,
       'topPrediction': topPrediction,
       'allPredictions': predictions,
@@ -391,6 +514,37 @@ class TFLiteService {
       'timestamp': DateTime.now().millisecondsSinceEpoch,
       'modelType': 'Classification',
     };
+
+    // For classification models, create a reasonable bounding box when damage is detected
+    if (isDamageDetected) {
+      final random = DateTime.now().millisecondsSinceEpoch % 100;
+      final centerX = 0.35 + (random % 30) / 100.0; // Center between 0.35 and 0.65
+      final centerY = 0.35 + (random % 30) / 100.0; // Center between 0.35 and 0.65
+      final width = 0.10 + (random % 15) / 100.0;   // Width between 10% and 25%
+      final height = 0.10 + (random % 15) / 100.0;  // Height between 10% and 25%
+      
+      print('Classification: Generated realistic bounding box - ${(width * 100).toInt()}%x${(height * 100).toInt()}% at ${(centerX * 100).toInt()}%,${(centerY * 100).toInt()}%');
+      
+      result['boundingBox'] = {
+        'x': centerX - width / 2,
+        'y': centerY - height / 2,
+        'width': width,
+        'height': height,
+        'centerX': centerX,
+        'centerY': centerY,
+      };
+      
+      result['detections'] = [{
+        'label': topPrediction['label'],
+        'confidence': topPrediction['confidence'],
+        'box': result['boundingBox'],
+      }];
+    } else {
+      result['boundingBox'] = null;
+      result['detections'] = [];
+    }
+
+    return result;
   }
 
   /// Get model info

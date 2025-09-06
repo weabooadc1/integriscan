@@ -112,12 +112,12 @@ class PTZService {
   /// Send PTZ command to AMCREST IP2M-841B camera using Digest Authentication
   /// Uses port 80 specifically for AMCREST cameras
   static Future<bool> _sendCameraCommand(String rtspUrl, String command) async {
-    // Reduced rate limiting - AMCREST cameras can handle faster commands
+    // Reduced rate limiting for auto-scan - AMCREST cameras can handle faster commands
     final now = DateTime.now();
     if (_lastCommandTime != null) {
       final timeSinceLastCommand = now.difference(_lastCommandTime!);
-      if (timeSinceLastCommand < Duration(milliseconds: 500)) {
-        final waitTime = Duration(milliseconds: 500) - timeSinceLastCommand;
+      if (timeSinceLastCommand < Duration(milliseconds: 200)) { // Reduced from 500ms to 200ms
+        final waitTime = Duration(milliseconds: 200) - timeSinceLastCommand;
         print('⏳ IP2M-841B PTZ: Rate limiting - waiting ${waitTime.inMilliseconds}ms');
         await Future.delayed(waitTime);
       }
@@ -411,10 +411,14 @@ class PTZService {
     
     if (moveSuccess) {
       // Extended delay to allow camera to move further before stopping
-      await Future.delayed(Duration(milliseconds: 1300)); // 1.5 seconds for optimal movement coverage
+      await Future.delayed(Duration(milliseconds: 900)); // Reduced from 1500ms to 1000ms
       // Send stop command using correct format
       bool stopSuccess = await _sendCameraCommand(rtspUrl, 'action=stop&channel=0&code=Left&arg1=0&arg2=$speed&arg3=0');
       print('🛑 PTZ: Pan left stop command sent - ${stopSuccess ? "SUCCESS" : "FAILED"}');
+      
+      // Additional delay after stop to ensure camera is ready for next command
+      await Future.delayed(Duration(milliseconds: 300));
+      
       return stopSuccess;
     }
     
@@ -431,10 +435,14 @@ class PTZService {
     
     if (moveSuccess) {
       // Extended delay to allow camera to move further before stopping
-      await Future.delayed(Duration(milliseconds: 1300)); // 1.5 seconds for optimal movement coverage
+      await Future.delayed(Duration(milliseconds: 1000)); // Reduced from 1500ms to 1000ms
       // Send stop command using correct format
       bool stopSuccess = await _sendCameraCommand(rtspUrl, 'action=stop&channel=0&code=Right&arg1=0&arg2=$speed&arg3=0');
       print('🛑 PTZ: Pan right stop command sent - ${stopSuccess ? "SUCCESS" : "FAILED"}');
+      
+      // Additional delay after stop to ensure camera is ready for next command
+      await Future.delayed(Duration(milliseconds: 300));
+      
       return stopSuccess;
     }
     

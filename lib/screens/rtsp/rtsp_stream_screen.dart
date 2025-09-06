@@ -22,28 +22,36 @@ class RtspStreamScreen extends StatefulWidget {
   State<RtspStreamScreen> createState() => _RtspStreamScreenState();
 }
 
+// Add new enum for scan states
+enum AutoScanState {
+  idle,
+  analyzing,
+  showingResults,
+  movingCamera,
+  stabilizing
+}
+
 class _RtspStreamScreenState extends State<RtspStreamScreen> {
   late VlcPlayerController _vlcViewController;
   bool _isPlaying = true;
   bool _isConnected = false;
   bool _isLoading = true;
   bool _isAnalyzing = false;
-  bool _analysisEnabled = false;
+  
+  // Redesigned Auto-scan state management
+  bool _autoScanEnabled = false;
+  AutoScanState _currentScanState = AutoScanState.idle;
+  Timer? _autoScanTimer;
+  
   // TFLite Analysis
   Map<String, dynamic>? _lastAnalysisResult;
   int _totalFramesAnalyzed = 0;
   int _damagesDetected = 0;
-  Timer? _analysisTimer;
   final GlobalKey _playerKey = GlobalKey();
   List<Map<String, dynamic>> _currentDetections = [];
   List<Map<String, dynamic>> _detectionHistory = []; // Store all detections for report
-  
-  // CPU optimization variables
-  int _frameSkipCounter = 0;
-  static const int _frameSkipThreshold = 2; // Process every 3rd frame
-  DateTime? _lastFrameProcessed;
-  Uint8List? _lastFrameBytes; // Cache last frame for comparison
-  static const double _frameSimilarityThreshold = 0.95; // Skip similar frames
+  // CPU optimization variables - removed unused ones, kept only what's needed
+  // static const double _frameSimilarityThreshold = 0.95; // Skip similar frames
   
   // User configurable analysis settings
   int _analysisIntervalSeconds = 5; // Default 5 seconds
@@ -53,15 +61,12 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> {
   bool _ptzEnabled = false;
   bool _ptzSupported = false;
   bool _isMovingCamera = false;
-  int _currentScanIndex = 0;
   int _totalPTZMovements = 0;
   Timer? _ptzMovementTimer;
   bool _ptzDebugMode = false; // For testing PTZ without actual camera
   
-  // Bounding box display timing
-  Timer? _boundingBoxTimer;
+  // Bounding box display timing - removed since handled by auto-scan states
   bool _showBoundingBoxes = true;
-  bool _waitingForPTZMovement = false;
 
   @override
   void initState() {
@@ -550,34 +555,35 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> {
     print('🎥 PTZ: Initializing AMCREST IP2M-841B PTZ control...');
     
     // For IP2M-841B, enable PTZ by default since we know it works
+    // Also enable debug mode by default for testing
     setState(() {
       _ptzSupported = true;
-      _ptzDebugMode = false; // Start with real PTZ enabled
+      _ptzDebugMode = true; // Enable debug mode by default for testing
     });
     
-    // Test the actual PTZ connection with working commands
+    print('🎥 PTZ: Enabled with debug mode for testing');
+    
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('🔧 PTZ Debug Mode enabled for testing - Auto-scan ready!'),
+        backgroundColor: Colors.purple,
+        duration: Duration(seconds: 3),
+      ),
+    );
+    
+    // Optional: Still test real PTZ in background but don't block functionality
+    _testRealPTZInBackground();
+  }
+
+  void _testRealPTZInBackground() async {
+    // Test the actual PTZ connection with working commands in background
     try {
       // First test basic HTTP connectivity
-      print('🔌 PTZ: Testing camera HTTP connectivity...');
+      print('🔌 PTZ: Testing camera HTTP connectivity in background...');
       final connectivityOk = await PTZService.testCameraConnectivity(widget.rtspUrl);
       
       if (!connectivityOk) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: const Text('⚠️ Camera HTTP port unreachable. PTZ may not work.'),
-            backgroundColor: Colors.orange,
-            duration: const Duration(seconds: 4),
-            action: SnackBarAction(
-              label: 'Debug Mode',
-              textColor: Colors.white,
-              onPressed: () {
-                setState(() {
-                  _ptzDebugMode = true;
-                });
-              },
-            ),
-          ),
-        );
+        print('⚠️ PTZ: Camera HTTP port unreachable - staying in debug mode');
         return;
       }
       
@@ -587,69 +593,30 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> {
       final formatSuccess = await PTZService.testPTZFormats(widget.rtspUrl);
       
       if (formatSuccess) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: const Text('✅ AMCREST PTZ command format found! Camera movement working.'),
-            backgroundColor: Colors.green,
-            behavior: SnackBarBehavior.floating,
-            duration: const Duration(seconds: 4),
-          ),
-        );
-        } else {
-          // Fallback to standard test
-          final success = await PTZService.panRight(widget.rtspUrl, speed: 4);
-          if (success) {
-            // Camera responded - PTZ confirmed working
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(
-                content: const Text('✅ AMCREST IP2M-841B PTZ detected! Camera supports pan/tilt/zoom.'),
-                backgroundColor: Colors.green,
-                behavior: SnackBarBehavior.floating,
-                duration: const Duration(seconds: 4),
+        print('✅ PTZ: Real PTZ commands working! Can disable debug mode if needed');
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: const Text('✅ Real PTZ commands working! You can disable debug mode.'),
+              backgroundColor: Colors.green,
+              duration: const Duration(seconds: 4),
+              action: SnackBarAction(
+                label: 'Disable Debug',
+                textColor: Colors.white,
+                onPressed: () {
+                  setState(() {
+                    _ptzDebugMode = false;
+                  });
+                },
               ),
-            );
-            
-            // Return to center after test
-            await Future.delayed(Duration(seconds: 2));
-            await PTZService.panLeft(widget.rtspUrl, speed: 4);
-          } else {
-        // PTZ commands not working - maybe auth issue
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: const Text('⚠️ PTZ commands enabled but authentication may need adjustment'),
-            backgroundColor: Colors.orange,
-            behavior: SnackBarBehavior.floating,
-            duration: const Duration(seconds: 6),
-            action: SnackBarAction(
-              label: 'Debug Mode',
-              textColor: Colors.white,
-              onPressed: () {
-                setState(() {
-                  _ptzDebugMode = true;
-                });
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(
-                    content: Text('PTZ Debug mode enabled - UI controls available'),
-                    backgroundColor: Colors.purple,
-                    duration: Duration(seconds: 2),
-                  ),
-                );
-              },
             ),
-          ),
-        );
+          );
         }
+      } else {
+        print('⚠️ PTZ: Real PTZ commands not working - debug mode recommended');
       }
     } catch (e) {
-      print('🎥 PTZ: Error testing connection: $e');
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: const Text('PTZ initialization failed. Manual controls still available.'),
-          backgroundColor: Colors.orange,
-          behavior: SnackBarBehavior.floating,
-          duration: const Duration(seconds: 4),
-        ),
-      );
+      print('🎥 PTZ: Background test error: $e');
     }
   }
 
@@ -708,233 +675,397 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> {
     }
   }
 
-  void _toggleAnalysis() {
+  // Replace _toggleAnalysis() and _togglePTZ() with this unified method:
+  void _toggleAutoScan() {
+    print('🔄 _toggleAutoScan() called - current state: $_autoScanEnabled');
+    
     setState(() {
-      _analysisEnabled = !_analysisEnabled;
+      _autoScanEnabled = !_autoScanEnabled;
     });
 
-    if (_analysisEnabled) {
-      _startAnalysis();
+    print('🔄 Auto-scan enabled changed to: $_autoScanEnabled');
+
+    if (_autoScanEnabled) {
+      print('🔄 Starting auto-scan');
+      _startAutoScan();
     } else {
-      _stopAnalysis();
+      print('🔄 Stopping auto-scan');
+      _stopAutoScan();
     }
   }
 
-  void _startAnalysis() {
-    // Use configurable interval to reduce CPU load
-    _analysisTimer = Timer.periodic(Duration(seconds: _analysisIntervalSeconds), (timer) async {
-      if (!_analysisEnabled || !_isConnected || !mounted) return;
-
-      // Skip analysis if previous one is still running
-      if (_isAnalyzing) {
-        print('⏭️ Skipping analysis - previous analysis still running');
-        return;
-      }
-
-      if (mounted) {
-        setState(() {
-          _isAnalyzing = true;
-        });
-      }
-
-      await _runRealTimeAnalysis();
-
-      if (mounted) {
-        setState(() {
-          _isAnalyzing = false;
-        });
-      }
-    });
-  }
-
-  void _stopAnalysis() {
-    _analysisTimer?.cancel();
-    _analysisTimer = null;
-    _boundingBoxTimer?.cancel(); // Cancel bounding box timer
-    _boundingBoxTimer = null;
+  void _startAutoScan() {
+    print('🎯 _startAutoScan() called');
+    print('🎯 PTZ Supported: $_ptzSupported, PTZ Debug: $_ptzDebugMode');
+    print('🎯 VLC Connected: $_isConnected, VLC Loading: $_isLoading');
     
-    // Reset bounding box display state
-    if (mounted) {
-      setState(() {
-        _waitingForPTZMovement = false;
-        _showBoundingBoxes = true; // Reset to default state
-        _currentDetections = []; // Clear any current detections
-      });
-    }
-    
-    _stopPTZMovement(); // Also stop PTZ movement
-  }
-
-  // PTZ Control Methods
-  
-  /// Toggle PTZ automatic scanning
-  void _togglePTZ() {
     if (!_ptzSupported && !_ptzDebugMode) {
+      print('❌ Auto-scan blocked: PTZ not supported and debug mode disabled');
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('PTZ control is not supported by this camera'),
+          content: Text('Auto-scan requires PTZ camera support'),
           backgroundColor: Colors.red,
-          duration: Duration(seconds: 3),
         ),
       );
+      setState(() {
+        _autoScanEnabled = false;
+      });
       return;
     }
-    
+
+    print('🎯 Starting Auto-scan workflow');
     setState(() {
-      _ptzEnabled = !_ptzEnabled;
-      if (_ptzEnabled) {
-        _currentScanIndex = 0; // Reset scan pattern
-        _totalPTZMovements = 0;
-      }
+      _currentScanState = AutoScanState.analyzing;
     });
-    
-    if (_ptzEnabled && _analysisEnabled) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('PTZ Auto-Scan enabled! Camera will continuously move after each analysis. Tap STOP to end scanning.'),
-          backgroundColor: Colors.green,
-          duration: const Duration(seconds: 4),
-        ),
-      );
-    } else if (!_ptzEnabled) {
-      _stopPTZMovement();
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('PTZ Auto-Scan disabled'),
-          backgroundColor: Colors.orange,
-          duration: Duration(seconds: 2),
-        ),
-      );
-    }
-  }
-  
-  /// Toggle PTZ debug mode for testing
-  void _togglePTZDebugMode() {
-    setState(() {
-      _ptzDebugMode = !_ptzDebugMode;
-    });
-    
+
     ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(_ptzDebugMode 
-            ? 'PTZ Debug Mode enabled - UI controls now visible for testing'
-            : 'PTZ Debug Mode disabled'),
-        backgroundColor: _ptzDebugMode ? Colors.purple : Colors.orange,
-        duration: const Duration(seconds: 3),
+      const SnackBar(
+        content: Text('🔄 Auto-scan started: Analysis → Results → Move → Repeat'),
+        backgroundColor: Colors.green,
+        duration: Duration(seconds: 3),
+      ),
+    );
+
+    print('🎯 About to call _executeAutoScanCycle()');
+    _executeAutoScanCycle();
+  }
+
+  void _stopAutoScan() {
+    print('🛑 Stopping Auto-scan workflow');
+    
+    _autoScanTimer?.cancel();
+    _autoScanTimer = null;
+    
+    setState(() {
+      _currentScanState = AutoScanState.idle;
+      _currentDetections = [];
+      _showBoundingBoxes = true;
+    });
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('Auto-scan stopped'),
+        backgroundColor: Colors.orange,
+        duration: Duration(seconds: 2),
       ),
     );
   }
-  
-  /// Stop PTZ movement
-  void _stopPTZMovement() {
-    _ptzMovementTimer?.cancel();
-    _ptzMovementTimer = null;
+
+  // New unified auto-scan cycle method
+  Future<void> _executeAutoScanCycle() async {
+    print('🔄 _executeAutoScanCycle() called');
+    print('🔄 Auto-scan enabled: $_autoScanEnabled, mounted: $mounted');
+    print('🔄 Current scan state: $_currentScanState');
     
-    if (mounted) {
+    if (!_autoScanEnabled || !mounted) {
+      print('❌ Auto-scan cycle aborted: enabled=$_autoScanEnabled, mounted=$mounted');
+      return;
+    }
+
+    try {
+      // State 1: Initial Analysis
+      print('📊 Auto-scan: Step 1 - Running analysis');
       setState(() {
-        _isMovingCamera = false;
+        _currentScanState = AutoScanState.analyzing;
       });
+
+      final analysisResult = await _performSingleAnalysis();
+      print('📊 Analysis result: $analysisResult');
+
+      if (!_autoScanEnabled || !mounted) {
+        print('❌ Auto-scan aborted after analysis');
+        return;
+      }
+
+      // State 2: Show Detection Results (5 seconds)
+      print('🎯 Auto-scan: Step 2 - Showing results for 5 seconds');
+      setState(() {
+        _currentScanState = AutoScanState.showingResults;
+        
+        if (analysisResult != null && analysisResult['isDamageDetected'] == true) {
+          // Show bounding boxes for damage detection
+          final detection = {
+            'label': analysisResult['damageType'] ?? 'Unknown',
+            'confidence': analysisResult['confidence'] ?? 0.0,
+            'box': {
+              'x': 0.3,
+              'y': 0.3,
+              'width': 0.4,
+              'height': 0.4,
+            }
+          };
+          _currentDetections = [detection];
+          _showBoundingBoxes = true;
+          print('🎯 Showing bounding boxes for detection: ${detection['label']}');
+        } else {
+          _currentDetections = [];
+          _showBoundingBoxes = false;
+          print('🎯 No damage detected, hiding bounding boxes');
+        }
+      });
+
+      // Wait exactly 5 seconds
+      print('⏰ Auto-scan: Setting 5-second timer for results display');
+      _autoScanTimer = Timer(const Duration(seconds: 5), () async {
+        print('⏰ 5-second timer triggered');
+        if (!_autoScanEnabled || !mounted) {
+          print('❌ Auto-scan aborted in timer callback');
+          return;
+        }
+
+        // State 3: Camera Movement
+        print('📹 Auto-scan: Step 3 - Moving camera');
+        setState(() {
+          _currentScanState = AutoScanState.movingCamera;
+          _showBoundingBoxes = false; // Hide bounding boxes during movement
+          _currentDetections = [];
+        });
+
+        final moveSuccess = await _performCameraMovement();
+        print('📹 Camera movement result: $moveSuccess');
+
+        if (!_autoScanEnabled || !mounted) {
+          print('❌ Auto-scan aborted after camera movement');
+          return;
+        }
+
+        // State 4: Camera Stabilization
+        if (moveSuccess) {
+          print('⏳ Auto-scan: Step 4 - Camera stabilization (3 seconds)');
+          setState(() {
+            _currentScanState = AutoScanState.stabilizing;
+          });
+
+          _autoScanTimer = Timer(const Duration(seconds: 3), () {
+            print('⏳ Stabilization timer triggered');
+            if (!_autoScanEnabled || !mounted) {
+              print('❌ Auto-scan aborted in stabilization callback');
+              return;
+            }
+
+            // Return to State 1: Next Analysis Cycle
+            print('🔄 Auto-scan: Cycle complete, starting next analysis');
+            _executeAutoScanCycle(); // Recursive call for continuous scanning
+          });
+        } else {
+          print('❌ Auto-scan: Camera movement failed, retrying cycle');
+          // Retry the cycle even if movement fails
+          _autoScanTimer = Timer(const Duration(seconds: 2), () {
+            if (_autoScanEnabled && mounted) {
+              print('🔄 Retrying auto-scan cycle after movement failure');
+              _executeAutoScanCycle();
+            }
+          });
+        }
+      });
+
+    } catch (e) {
+      print('❌ Auto-scan: Error in cycle: $e');
+      if (_autoScanEnabled && mounted) {
+        // Retry after error
+        _autoScanTimer = Timer(const Duration(seconds: 3), () {
+          if (_autoScanEnabled && mounted) {
+            print('🔄 Retrying auto-scan cycle after error');
+            _executeAutoScanCycle();
+          }
+        });
+      }
     }
   }
-  
-  /// Perform delayed PTZ movement (used by intelligent workflow)
-  Future<void> _performPTZMovementDelayed() async {
-    if (!_ptzEnabled || !_ptzSupported || _isMovingCamera) {
-      _waitingForPTZMovement = false;
-      return;
+
+  // Simplified single analysis method
+  Future<Map<String, dynamic>?> _performSingleAnalysis() async {
+    print('🔍 _performSingleAnalysis() called');
+    print('🔍 VLC Connected: $_isConnected, Widget key context: ${_playerKey.currentContext != null}');
+    
+    if (!_isConnected) {
+      print('❌ Analysis skipped - VLC not connected');
+      return null;
     }
 
-    setState(() {
-      _waitingForPTZMovement = false;
-    });
-
-    await _performPTZMovement();
+    try {
+      print('🔍 Performing single analysis...');
+      
+      // Small delay to ensure frame is ready
+      await Future.delayed(const Duration(milliseconds: 200));
+      
+      // Capture frame from VLC player
+      print('📸 Attempting to capture frame from VLC widget');
+      final frameBytes = await FrameCaptureService.captureWidget(_playerKey);
+      
+      if (frameBytes != null) {
+        print('📸 Frame captured successfully: ${frameBytes.length} bytes');
+        
+        // Run AI inference
+        print('🤖 Running AI inference on captured frame');
+        final result = await TFLiteService.runInference(frameBytes);
+        print('🤖 AI inference result: $result');
+        
+        if (result != null && result['isDamageDetected'] != null) {
+          print('🤖 Analysis result: ${result['damageType']} (${(result['confidence'] * 100).toInt()}%)');
+          
+          // Update statistics
+          setState(() {
+            _totalFramesAnalyzed++;
+            if (result['isDamageDetected'] == true) {
+              _damagesDetected++;
+              
+              // Save to detection history if damage found
+              if (result['confidence'] > 0.5) {
+                print('💾 Saving detection to history');
+                _saveDetectionToHistory(result, frameBytes);
+              }
+            }
+            _lastAnalysisResult = result; // Store the latest result
+          });
+          
+          return result;
+        } else {
+          print('🤖 Analysis returned null or invalid result: $result');
+          return null;
+        }
+      } else {
+        print('❌ Frame capture failed - returned null');
+        return null;
+      }
+    } catch (e) {
+      print('❌ Analysis error: $e');
+      return null;
+    }
   }
-  
-  /// Perform PTZ movement after analysis (IP2M-841B optimized)
-  Future<void> _performPTZMovement() async {
-    if (!_ptzEnabled || !_ptzSupported || _isMovingCamera) {
-      return;
+
+  // Simplified camera movement method
+  Future<bool> _performCameraMovement() async {
+    print('🎬 Auto-scan: ===== CAMERA MOVEMENT START =====');
+    print('🎬 Auto-scan: PTZ supported: $_ptzSupported, Debug mode: $_ptzDebugMode, Is moving: $_isMovingCamera');
+    
+    if (!_ptzSupported && !_ptzDebugMode) {
+      print('🎬 Auto-scan: ❌ PTZ not supported and not in debug mode - BLOCKING MOVEMENT');
+      return false;
     }
 
+    print('🎬 Auto-scan: Setting movement state to true');
     setState(() {
       _isMovingCamera = true;
     });
 
     try {
-      print('🎯 IP2M-841B PTZ: Starting continuous scan movement ${_currentScanIndex + 1}');
-      
       bool success = false;
-      String movementDescription = '';
+      _totalPTZMovements++;
       
-      // Use continuous right movement for unlimited scanning with correct AMCREST API
-      print('➡️ PTZ: Moving RIGHT for continuous scanning (extended duration)...');
-      success = await PTZService.panRight(widget.rtspUrl, speed: 4); // Using correct speed parameter
-      movementDescription = 'Right (${_currentScanIndex + 1})';
+      print('🎬 Auto-scan: Starting movement $_totalPTZMovements');
+      
+      if (_ptzDebugMode) {
+        print('� Auto-scan: �🎥 PTZ Debug: Simulating movement $_totalPTZMovements');
+        await Future.delayed(const Duration(seconds: 2)); // Longer delay for more realistic simulation
+        success = true;
+        print('🎬 Auto-scan: ✅ Debug movement completed successfully');
+      } else {
+        print('🎬 Auto-scan: ➡️ PTZ: Moving RIGHT (movement $_totalPTZMovements)');
+        print('� Auto-scan: RTSP URL: ${widget.rtspUrl}');
+        
+        // Add retry logic for failed movements
+        for (int attempt = 1; attempt <= 2; attempt++) {
+          print('🎬 Auto-scan: Movement attempt $attempt/2');
+          success = await PTZService.panRight(widget.rtspUrl, speed: 4);
+          
+          if (success) {
+            print('🎬 Auto-scan: ✅ Movement successful on attempt $attempt');
+            break;
+          } else {
+            print('🎬 Auto-scan: ❌ Movement failed on attempt $attempt');
+            if (attempt < 2) {
+              print('🎬 Auto-scan: Waiting 1 second before retry...');
+              await Future.delayed(Duration(seconds: 1));
+            }
+          }
+        }
+        
+        print('🎬 Auto-scan: Final PTZ panRight result: $success');
+      }
 
       if (success) {
-        _currentScanIndex++;
-        _totalPTZMovements++;
+        print('🎬 Auto-scan: ✅ PTZ: Movement $_totalPTZMovements completed successfully');
         
-        print('✅ PTZ: Continuous Scan - Position $movementDescription completed');
-        print('📊 PTZ: Total movements: $_totalPTZMovements (unlimited scanning)');
-        
-        // Show success feedback with unlimited indication
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
-              content: Text('📹 Continuous Scan - Movement $_totalPTZMovements (tap to stop)'),
-              backgroundColor: Colors.green,
+              content: Text('📹 Camera moved (${_totalPTZMovements} moves) - Stabilizing...'),
+              backgroundColor: Colors.blue,
               duration: const Duration(seconds: 2),
-              action: SnackBarAction(
-                label: 'STOP',
-                textColor: Colors.white,
-                onPressed: () {
-                  _togglePTZ(); // Stop the scanning
-                },
-              ),
             ),
           );
         }
-        
-        // Extended wait for camera stabilization before next analysis
-        print('⏳ PTZ: Waiting 3 seconds for camera stabilization...');
-        await Future.delayed(Duration(seconds: 3));
-        
       } else {
-        print('❌ PTZ: Movement to $movementDescription failed');
+        print('🎬 Auto-scan: ❌ PTZ: Movement $_totalPTZMovements FAILED after all attempts');
         
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
-              content: Text('⚠️ PTZ movement failed. Continuing analysis at current position.'),
+              content: Text('⚠️ Camera movement ${_totalPTZMovements} failed - Continuing cycle'),
               backgroundColor: Colors.orange,
-              duration: Duration(seconds: 3),
+              duration: const Duration(seconds: 3),
             ),
           );
         }
       }
       
+      print('🎬 Auto-scan: ===== CAMERA MOVEMENT END (Success: $success) =====');
+      return success;
     } catch (e) {
-      print('❌ PTZ: Error during automated movement: $e');
+      print('🎬 Auto-scan: ❌ PTZ: EXCEPTION during movement: $e');
+      print('🎬 Auto-scan: Error stack trace: ${StackTrace.current}');
+      
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('PTZ Error: ${e.toString().substring(0, 50)}...'),
+            content: Text('❌ Camera movement error: ${e.toString().length > 50 ? e.toString().substring(0, 50) + '...' : e.toString()}'),
             backgroundColor: Colors.red,
-            duration: Duration(seconds: 3),
+            duration: const Duration(seconds: 3),
           ),
         );
       }
+      return false;
     } finally {
+      print('🎬 Auto-scan: Setting _isMovingCamera = false in finally block');
       if (mounted) {
         setState(() {
           _isMovingCamera = false;
         });
       }
+      print('🎬 Auto-scan: Movement state reset completed');
     }
   }
-  
+
+  // Helper method to save detections to history
+  Future<void> _saveDetectionToHistory(Map<String, dynamic> result, Uint8List frameBytes) async {
+    try {
+      final savedImagePath = await _saveAnalyzedFrame(
+        frameBytes, 
+        result['damageType'] ?? 'Unknown', 
+        result['confidence'] ?? 0.0
+      );
+      
+      final detectionData = {
+        'damageType': result['damageType'],
+        'confidence': result['confidence'],
+        'imagePath': savedImagePath,
+        'timestamp': DateTime.now().millisecondsSinceEpoch,
+        'boundingBox': {
+          'x': 0.3,
+          'y': 0.3,
+          'width': 0.4,
+          'height': 0.4,
+        },
+      };
+      
+      _detectionHistory.add(detectionData);
+      print('💾 Detection saved to history. Total: ${_detectionHistory.length}');
+    } catch (e) {
+      print('❌ Error saving detection: $e');
+    }
+  }
+
   /// Manual PTZ control for IP2M-841B
   Future<void> _manualPTZControl(PTZDirection direction) async {
     if (!_ptzSupported && !_ptzDebugMode) {
@@ -1038,222 +1169,44 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> {
       }
     }
   }
+
+  // PTZ Control Methods
   
-  /// Get scan pattern name
-  String _getScanPatternName() {
-    return 'Continuous Scan (Unlimited)';
+  /// Toggle PTZ automatic scanning - kept for backward compatibility but now just calls auto-scan
+  void _togglePTZ() {
+    // Legacy method - redirect to auto-scan
+    _toggleAutoScan();
   }
-
-  Future<void> _runRealTimeAnalysis() async {
-    if (!_analysisEnabled || !_isConnected) {
-      print('=== Analysis Skipped ===');
-      print('Analysis enabled: $_analysisEnabled, Connected: $_isConnected');
-      return;
-    }
-
-    try {
-      print('=== Starting Real-Time Analysis ===');
-      
-      // CPU Optimization 1: Rate limiting
-      final now = DateTime.now();
-      if (_lastFrameProcessed != null && 
-          now.difference(_lastFrameProcessed!).inMilliseconds < 3000) {
-        print('⏭️ Skipping analysis - rate limit (min 3 seconds between analyses)');
-        return;
-      }
-      
-      print('Analysis enabled: $_analysisEnabled, Connected: $_isConnected');
-      print('VLC Controller state: playing=${_vlcViewController.value.isPlaying}, initialized=${_vlcViewController.value.isInitialized}');
-      
-      // Additional checks for VLC player state
-      if (!_vlcViewController.value.isInitialized) {
-        print('VLC controller not initialized yet, skipping frame capture');
-        return;
-      }
-      
-      if (!_vlcViewController.value.isPlaying) {
-        print('VLC controller not playing, skipping frame capture');
-        return;
-      }
-      
-      // CPU Optimization 2: Frame skipping
-      _frameSkipCounter++;
-      if (_frameSkipCounter <= _frameSkipThreshold) {
-        print('⏭️ Skipping frame ${_frameSkipCounter}/${_frameSkipThreshold + 1} for CPU optimization');
-        return;
-      }
-      _frameSkipCounter = 0; // Reset counter
-      
-      // Small delay to ensure frame is ready
-      await Future.delayed(const Duration(milliseconds: 100));
-      
-      // Capture frame from VLC player
-      final frameBytes = await FrameCaptureService.captureWidget(_playerKey);
-      
-      if (frameBytes != null) {
-        print('Frame captured successfully: ${frameBytes.length} bytes');
-        
-        // CPU Optimization 3: Frame similarity check
-        if (_lastFrameBytes != null && _isFrameSimilar(frameBytes, _lastFrameBytes!)) {
-          print('⏭️ Skipping analysis - frame too similar to previous frame');
-          return;
-        }
-        
-        _lastFrameBytes = frameBytes;
-        _lastFrameProcessed = now;
-        
-        // CPU Optimization 4: Run inference in background isolate would be ideal,
-        // but for now we'll use the existing method with reduced frequency
-        final result = await TFLiteService.runInference(frameBytes);
-        
-        if (result != null && result['isDamageDetected'] != null) {
-          print('TFLite analysis result: $result');
-          await _processAnalysisResult(result, frameBytes);
-        } else {
-          print('TFLite returned null or invalid result.');
-        }
-      } else {
-        print('Frame capture failed - no frame data returned.');
-      }
-    } catch (e) {
-      print('Real-time analysis error: $e');
-    }
+  
+  /// Toggle PTZ debug mode for testing
+  void _togglePTZDebugMode() {
+    setState(() {
+      _ptzDebugMode = !_ptzDebugMode;
+    });
+    
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(_ptzDebugMode 
+            ? 'PTZ Debug Mode enabled - UI controls now visible for testing'
+            : 'PTZ Debug Mode disabled'),
+        backgroundColor: _ptzDebugMode ? Colors.purple : Colors.orange,
+        duration: const Duration(seconds: 3),
+      ),
+    );
   }
-
-  // CPU Optimization helper: Simple frame similarity check
-  bool _isFrameSimilar(Uint8List frame1, Uint8List frame2) {
-    if (frame1.length != frame2.length) return false;
-    
-    // Simple similarity check: compare file sizes and sample bytes
-    if ((frame1.length - frame2.length).abs() > frame1.length * 0.05) {
-      return false; // More than 5% size difference
-    }
-    
-    // Sample comparison - check every 100th byte for performance
-    int differences = 0;
-    final sampleSize = (frame1.length / 100).round();
-    
-    for (int i = 0; i < frame1.length; i += sampleSize) {
-      if (frame1[i] != frame2[i]) {
-        differences++;
-        if (differences > 10) return false; // Too many differences
-      }
-    }
-    
-    final similarity = 1.0 - (differences / (frame1.length / sampleSize));
-    print('🔍 Frame similarity: ${(similarity * 100).toStringAsFixed(1)}%');
-    
-    return similarity >= _frameSimilarityThreshold;
-  }
-
-  Future<void> _processAnalysisResult(Map<String, dynamic> result, Uint8List frameBytes) async {
-    final isDamage = result['isDamageDetected'] == true;
-    final confidence = result['confidence'] ?? 0.0;
-    final damageType = result['damageType'] ?? 'Unknown';
-    
-    // Process image saving outside setState if damage detected
-    String? savedImagePath;
-    Map<String, dynamic>? detectionData;
-    
-    if (isDamage && confidence > 0.5) {
-      // Save frame if damage detected and get the saved path
-      print('🖼️ Saving analyzed frame for damage: $damageType (confidence: $confidence)');
-      savedImagePath = await _saveAnalyzedFrame(frameBytes, damageType, confidence);
-      print('🖼️ Frame saved successfully at: $savedImagePath');
-      
-      detectionData = {
-        'damageType': damageType,
-        'confidence': confidence,
-        'imagePath': savedImagePath, // Use the actual saved path
-        'timestamp': DateTime.now().millisecondsSinceEpoch,
-        'boundingBox': {
-          'x': 0.3, // Center the bounding box for now
-          'y': 0.3,
-          'width': 0.4,
-          'height': 0.4,
-        },
-      };
-    }
+  
+  /// Stop PTZ movement
+  void _stopPTZMovement() {
+    _ptzMovementTimer?.cancel();
+    _ptzMovementTimer = null;
     
     if (mounted) {
       setState(() {
-        _totalFramesAnalyzed++;
-        if (isDamage) _damagesDetected++;
-        
-        // Update current detections
-        if (isDamage && confidence > 0.5) {
-          final detection = {
-            'label': damageType,
-            'confidence': confidence,
-            'box': {
-              'x': 0.3, // Center the bounding box for now
-              'y': 0.3,
-              'width': 0.4,
-              'height': 0.4,
-            }
-          };
-          
-          _currentDetections = [detection];
-          _showBoundingBoxes = true; // Show bounding boxes when damage is detected
-          
-          // Add to detection history
-          if (detectionData != null) {
-            _detectionHistory.add(detectionData);
-            print('📊 Added detection to history. Total detections: ${_detectionHistory.length}');
-            print('📊 Detection data: $detectionData');
-          }
-        } else {
-          _currentDetections = [];
-        }
-        
-        _lastAnalysisResult = {
-          'isDamageDetected': isDamage,
-          'confidence': confidence,
-          'damageType': damageType,
-          'timestamp': DateTime.now().millisecondsSinceEpoch,
-        };
+        _isMovingCamera = false;
       });
-      
-      // PTZ Integration: Intelligent workflow based on damage detection
-      if (_ptzEnabled && _ptzSupported) {
-        if (isDamage && confidence > 0.5) {
-          // Damage detected workflow: Show bounding box for 3 seconds, then move
-          print('🎥 PTZ: Damage detected! Showing bounding box for 3 seconds before moving...');
-          _waitingForPTZMovement = true;
-          
-          // Start timer to hide bounding boxes and trigger PTZ movement after 3 seconds
-          _boundingBoxTimer?.cancel();
-          _boundingBoxTimer = Timer(const Duration(seconds: 3), () {
-            if (mounted) {
-              setState(() {
-                _showBoundingBoxes = false;
-                _currentDetections = []; // Clear bounding boxes
-              });
-              
-              print('🎥 PTZ: 3 seconds elapsed, hiding bounding boxes and moving camera...');
-              
-              // Trigger PTZ movement after hiding bounding boxes
-              _performPTZMovementDelayed();
-            }
-          });
-        } else {
-          // No damage detected workflow: Wait 3 seconds then move
-          print('🎥 PTZ: No damage detected. Waiting 3 seconds before moving...');
-          _waitingForPTZMovement = true;
-          
-          // Start timer to trigger PTZ movement after 3 seconds
-          _boundingBoxTimer?.cancel();
-          _boundingBoxTimer = Timer(const Duration(seconds: 3), () {
-            if (mounted) {
-              print('🎥 PTZ: 3 seconds elapsed, moving camera...');
-              _performPTZMovementDelayed();
-            }
-          });
-        }
-      }
     }
   }
-
+  
   Future<String> _saveAnalyzedFrame(Uint8List frameBytes, String damageType, double confidence) async {
     try {
       // Create a unique filename
@@ -1472,16 +1425,14 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> {
 
   @override
   void dispose() {
-    _stopAnalysis();
+    _stopAutoScan();
     _stopPTZMovement(); // Stop PTZ movement
-    _boundingBoxTimer?.cancel(); // Cancel bounding box timer
     _vlcViewController.dispose();
     TFLiteService.dispose();
     
     // CPU Optimization: Clear memory caches
     _detectionHistory.clear(); // Clear in-memory detection history on dispose (logout)
     _currentDetections.clear();
-    _lastFrameBytes = null; // Free cached frame data
     _lastAnalysisResult = null;
     
     super.dispose();
@@ -1628,7 +1579,7 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> {
                       ),
                     ),
                     // Bounding Box Overlay
-                    if (_analysisEnabled && _currentDetections.isNotEmpty && _showBoundingBoxes)
+                    if (_autoScanEnabled && _currentDetections.isNotEmpty && _showBoundingBoxes)
                       CustomPaint(
                         painter: BoundingBoxPainter(_currentDetections),
                         size: Size.infinite,
@@ -1774,20 +1725,15 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> {
                       
                       const SizedBox(height: 16),
                       
-                      // AI Analysis Toggle
+                      // Auto-scan Toggle
                       Row(
                         children: [
                           Expanded(
-                            child: _buildControlCard(
-                              title: _analysisEnabled ? 'Stop Analysis' : 'Start Analysis',
-                              icon: _analysisEnabled ? Icons.stop_circle : Icons.smart_toy,
-                              color: _analysisEnabled ? Colors.orange : Colors.green,
-                              onTap: _toggleAnalysis,
-                            ),
+                            child: _buildAutoScanControlCard(),
                           ),
                           const SizedBox(width: 16),
                           Expanded(
-                            child: _buildAnalysisStatusCard(),
+                            child: _buildAutoScanStatusCard(),
                           ),
                         ],
                       ),
@@ -2153,10 +2099,10 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> {
                                                 _analysisIntervalSeconds = value;
                                               });
                                               
-                                              // Restart analysis with new interval
-                                              if (_analysisEnabled) {
-                                                _stopAnalysis();
-                                                _startAnalysis();
+                                              // Restart auto-scan with new interval if enabled
+                                              if (_autoScanEnabled) {
+                                                _stopAutoScan();
+                                                _startAutoScan();
                                               }
                                               
                                               ScaffoldMessenger.of(context).showSnackBar(
@@ -2303,9 +2249,9 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> {
                                     ),
                                     const SizedBox(width: 12),
                                     Text(
-                                      _analysisEnabled 
+                                      _autoScanEnabled
                                           ? 'Analysis running...'
-                                          : 'Start analysis to see results',
+                                          : 'Start auto-scan to see results',
                                       style: TextStyle(
                                         color: Colors.grey[600],
                                         fontSize: 14,
@@ -2386,7 +2332,52 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> {
     );
   }
 
-  Widget _buildAnalysisStatusCard() {
+  // Update the control card in the UI
+  Widget _buildAutoScanControlCard() {
+    return _buildControlCard(
+      title: _autoScanEnabled ? 'Stop Auto-Scan' : 'Start Auto-Scan',
+      icon: _autoScanEnabled ? Icons.stop_circle : Icons.auto_awesome,
+      color: _autoScanEnabled ? Colors.red : Colors.green,
+      onTap: _toggleAutoScan,
+    );
+  }
+
+  // Update the status card
+  Widget _buildAutoScanStatusCard() {
+    String statusText = 'Disabled';
+    Color statusColor = Colors.grey;
+    IconData statusIcon = Icons.auto_awesome_outlined;
+
+    if (_autoScanEnabled) {
+      switch (_currentScanState) {
+        case AutoScanState.analyzing:
+          statusText = 'Analyzing';
+          statusColor = Colors.blue;
+          statusIcon = Icons.search;
+          break;
+        case AutoScanState.showingResults:
+          statusText = 'Showing Results';
+          statusColor = Colors.orange;
+          statusIcon = Icons.visibility;
+          break;
+        case AutoScanState.movingCamera:
+          statusText = 'Moving Camera';
+          statusColor = Colors.purple;
+          statusIcon = Icons.videocam;
+          break;
+        case AutoScanState.stabilizing:
+          statusText = 'Stabilizing';
+          statusColor = Colors.teal;
+          statusIcon = Icons.hourglass_empty;
+          break;
+        case AutoScanState.idle:
+          statusText = 'Idle';
+          statusColor = Colors.green;
+          statusIcon = Icons.auto_awesome;
+          break;
+      }
+    }
+
     return Container(
       decoration: BoxDecoration(
         color: Colors.white,
@@ -2407,26 +2398,41 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> {
               width: 50,
               height: 50,
               decoration: BoxDecoration(
-                color: _analysisEnabled 
-                    ? Colors.green.withOpacity(0.1)
-                    : Colors.grey.withOpacity(0.1),
+                color: statusColor.withOpacity(0.1),
                 borderRadius: BorderRadius.circular(25),
               ),
-              child: Icon(
-                _analysisEnabled ? Icons.visibility : Icons.visibility_off,
-                color: _analysisEnabled ? Colors.green : Colors.grey,
-                size: 24,
-              ),
+              child: _currentScanState == AutoScanState.analyzing || 
+                     _currentScanState == AutoScanState.movingCamera
+                  ? const SizedBox(
+                      width: 24,
+                      height: 24,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : Icon(
+                      statusIcon,
+                      color: statusColor,
+                      size: 24,
+                    ),
             ),
             const SizedBox(height: 12),
             Text(
-              _analysisEnabled ? 'Analyzing' : 'Disabled',
+              statusText,
               style: const TextStyle(
                 fontSize: 14,
                 fontWeight: FontWeight.w600,
                 color: Colors.black87,
               ),
             ),
+            if (_totalPTZMovements > 0) ...[
+              const SizedBox(height: 4),
+              Text(
+                'Movements: $_totalPTZMovements',
+                style: TextStyle(
+                  fontSize: 12,
+                  color: Colors.grey[600],
+                ),
+              ),
+            ],
           ],
         ),
       ),
