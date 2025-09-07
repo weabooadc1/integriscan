@@ -21,12 +21,6 @@ class FlaggedReportDetailScreen extends StatelessWidget {
         backgroundColor: Colors.white,
         foregroundColor: Colors.black87,
         elevation: 0,
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.share),
-            onPressed: () => _shareReport(),
-          ),
-        ],
       ),
       body: SingleChildScrollView(
         child: Column(
@@ -36,7 +30,6 @@ class FlaggedReportDetailScreen extends StatelessWidget {
             _buildVerificationStatusCard(),
             _buildSummaryCard(),
             _buildDetectionsList(),
-            _buildRecommendationsCard(),
             if (report.engineerComments != null && report.engineerComments!.isNotEmpty)
               _buildEngineerCommentsCard(),
             _buildFinishButton(context),
@@ -481,39 +474,85 @@ class FlaggedReportDetailScreen extends StatelessWidget {
             const SizedBox(height: 12),
           ],
           if (detection.recommendations.isNotEmpty) ...[
-            const Text(
-              'Recommendations:',
-              style: TextStyle(
-                fontSize: 14,
-                fontWeight: FontWeight.w600,
-                color: Colors.black87,
+            const SizedBox(height: 8),
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: Colors.blue.withOpacity(0.05),
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: Colors.blue.withOpacity(0.1)),
               ),
-            ),
-            const SizedBox(height: 4),
-            ...detection.recommendations.map((rec) => Padding(
-              padding: const EdgeInsets.only(bottom: 4),
-              child: Row(
+              child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(
-                    '• ',
-                    style: TextStyle(
-                      fontSize: 14,
-                      color: Colors.grey[600],
-                    ),
-                  ),
-                  Expanded(
-                    child: Text(
-                      rec,
-                      style: TextStyle(
-                        fontSize: 14,
-                        color: Colors.grey[600],
+                  Row(
+                    children: [
+                      Icon(
+                        Icons.build,
+                        color: Colors.blue[600],
+                        size: 16,
                       ),
-                    ),
+                      const SizedBox(width: 6),
+                      Text(
+                        'Recommendations:',
+                        style: TextStyle(
+                          fontSize: 14,
+                          fontWeight: FontWeight.w600,
+                          color: Colors.blue[700],
+                        ),
+                      ),
+                    ],
                   ),
+                  const SizedBox(height: 8),
+                  ...detection.recommendations.asMap().entries.map((entry) {
+                    final index = entry.key;
+                    final rec = entry.value;
+                    return Container(
+                      margin: EdgeInsets.only(
+                        bottom: index < detection.recommendations.length - 1 ? 6 : 0,
+                      ),
+                      padding: const EdgeInsets.all(8),
+                      decoration: BoxDecoration(
+                        color: Colors.white,
+                        borderRadius: BorderRadius.circular(6),
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.black.withOpacity(0.03),
+                            blurRadius: 2,
+                            offset: const Offset(0, 1),
+                          ),
+                        ],
+                      ),
+                      child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Container(
+                            margin: const EdgeInsets.only(top: 2),
+                            width: 4,
+                            height: 4,
+                            decoration: BoxDecoration(
+                              color: Colors.blue[600],
+                              shape: BoxShape.circle,
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              rec,
+                              style: TextStyle(
+                                fontSize: 13,
+                                color: Colors.grey[700],
+                                height: 1.3,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    );
+                  }),
                 ],
               ),
-            )),
+            ),
           ],
         ],
       ),
@@ -630,70 +669,6 @@ class FlaggedReportDetailScreen extends StatelessWidget {
     }
   }
 
-  Widget _buildRecommendationsCard() {
-    if (report.summary.recommendations.isEmpty) return const SizedBox.shrink();
-
-    return Container(
-      margin: const EdgeInsets.all(16),
-      padding: const EdgeInsets.all(20),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(12),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withOpacity(0.05),
-            blurRadius: 10,
-            offset: const Offset(0, 2),
-          ),
-        ],
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const Row(
-            children: [
-              Icon(Icons.lightbulb, color: Colors.amber, size: 24),
-              SizedBox(width: 8),
-              Text(
-                'Overall Recommendations',
-                style: TextStyle(
-                  fontSize: 18,
-                  fontWeight: FontWeight.bold,
-                  color: Colors.black87,
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 16),
-          ...report.summary.recommendations.map((rec) => Padding(
-            padding: const EdgeInsets.only(bottom: 8),
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Icon(
-                  Icons.check_circle,
-                  color: Colors.green[600],
-                  size: 16,
-                ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: Text(
-                    rec,
-                    style: TextStyle(
-                      fontSize: 14,
-                      color: Colors.grey[700],
-                      height: 1.4,
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          )),
-        ],
-      ),
-    );
-  }
-
   Widget _buildEngineerCommentsCard() {
     return Container(
       margin: const EdgeInsets.all(16),
@@ -769,10 +744,6 @@ class FlaggedReportDetailScreen extends StatelessWidget {
         ],
       ),
     );
-  }
-
-  void _shareReport() {
-    // Implement share functionality
   }
 
   String _formatDate(DateTime date) {
