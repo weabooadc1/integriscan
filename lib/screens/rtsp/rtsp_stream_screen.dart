@@ -593,24 +593,49 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> {
       final formatSuccess = await PTZService.testPTZFormats(widget.rtspUrl);
       
       if (formatSuccess) {
-        print('✅ PTZ: Real PTZ commands working! Can disable debug mode if needed');
+        print('✅ PTZ: Real PTZ commands working! Starting camera calibration...');
+        
+        // Show calibration message to user
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: const Text('✅ Real PTZ commands working! You can disable debug mode.'),
-              backgroundColor: Colors.green,
-              duration: const Duration(seconds: 4),
-              action: SnackBarAction(
-                label: 'Disable Debug',
-                textColor: Colors.white,
-                onPressed: () {
-                  setState(() {
-                    _ptzDebugMode = false;
-                  });
-                },
-              ),
+            const SnackBar(
+              content: Text('🔧 AMCREST Camera detected - Starting calibration...'),
+              backgroundColor: Colors.blue,
+              duration: Duration(seconds: 4),
             ),
           );
+        }
+        
+        // Perform camera calibration (pan left and right)
+        final calibrationSuccess = await PTZService.quickCalibrateCamera(widget.rtspUrl);
+        
+        if (mounted) {
+          if (calibrationSuccess) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: const Text('✅ AMCREST Camera calibrated (Right → Left)! Ready for auto-scan.'),
+                backgroundColor: Colors.green,
+                duration: const Duration(seconds: 4),
+                action: SnackBarAction(
+                  label: 'Disable Debug',
+                  textColor: Colors.white,
+                  onPressed: () {
+                    setState(() {
+                      _ptzDebugMode = false;
+                    });
+                  },
+                ),
+              ),
+            );
+          } else {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text('⚠️ Camera calibration completed with warnings - Auto-scan still available'),
+                backgroundColor: Colors.orange,
+                duration: Duration(seconds: 4),
+              ),
+            );
+          }
         }
       } else {
         print('⚠️ PTZ: Real PTZ commands not working - debug mode recommended');
@@ -1206,6 +1231,85 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> {
       });
     }
   }
+
+  /// Perform camera calibration by panning left and right
+  Future<void> _performCameraCalibration() async {
+    if (_isMovingCamera) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Camera is already moving, please wait...'),
+          backgroundColor: Colors.orange,
+        ),
+      );
+      return;
+    }
+
+    setState(() {
+      _isMovingCamera = true;
+    });
+
+    try {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('🔧 Calibrating camera: Right → Left...'),
+          backgroundColor: Colors.blue,
+          duration: Duration(seconds: 2),
+        ),
+      );
+
+      bool calibrationSuccess = false;
+
+      if (_ptzDebugMode) {
+        // Simulate simple calibration in debug mode
+        print('🎭 Debug Mode: Simulating right → left calibration...');
+        await Future.delayed(const Duration(seconds: 2));
+        calibrationSuccess = true;
+      } else {
+        // Perform actual simple camera calibration
+        print('🔧 Performing simple right → left calibration...');
+        calibrationSuccess = await PTZService.quickCalibrateCamera(widget.rtspUrl);
+      }
+
+      if (mounted) {
+        if (calibrationSuccess) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(_ptzDebugMode 
+                  ? '✅ Debug calibration completed (Right → Left)!' 
+                  : '✅ AMCREST camera calibrated (Right → Left)!'),
+              backgroundColor: Colors.green,
+              duration: const Duration(seconds: 3),
+            ),
+          );
+        } else {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('❌ Camera calibration failed - Check connection'),
+              backgroundColor: Colors.red,
+              duration: Duration(seconds: 3),
+            ),
+          );
+        }
+      }
+    } catch (e) {
+      print('❌ Camera calibration error: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('❌ Calibration error: ${e.toString().length > 30 ? e.toString().substring(0, 30) + '...' : e.toString()}'),
+            backgroundColor: Colors.red,
+            duration: const Duration(seconds: 3),
+          ),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isMovingCamera = false;
+        });
+      }
+    }
+  }
   
   Future<String> _saveAnalyzedFrame(Uint8List frameBytes, String damageType, double confidence) async {
     try {
@@ -1310,7 +1414,12 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> {
           // Don't show error to user - this is background operation
         });
 
-        Navigator.push(
+        // End the analysis session before navigating to report
+        await _endAnalysisSession();
+
+        // Use pushReplacement to prevent going back to RTSP screen
+        // This indicates that the analysis session is complete
+        Navigator.pushReplacement(
           context,
           MaterialPageRoute(
             builder: (context) => ReportDetailScreen(
@@ -1330,6 +1439,117 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> {
           ),
         );
       }
+    }
+  }
+
+  /// Handle back navigation with confirmation if analysis is active
+  Future<void> _handleBackNavigation() async {
+    // If auto-scan is running or we have detection history, show confirmation
+    if (_autoScanEnabled || _detectionHistory.isNotEmpty) {
+      final shouldLeave = await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('End Analysis Session?'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              if (_autoScanEnabled) ...[
+                const Text('• Auto-scan is currently running'),
+                const SizedBox(height: 8),
+              ],
+              if (_detectionHistory.isNotEmpty) ...[
+                Text('• ${_detectionHistory.length} detection(s) found'),
+                const SizedBox(height: 8),
+              ],
+              const Text(
+                'Leaving now will end your analysis session. Consider generating a report first.',
+                style: TextStyle(fontWeight: FontWeight.w500),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(false),
+              child: const Text('Cancel'),
+            ),
+            if (_detectionHistory.isNotEmpty)
+              TextButton(
+                onPressed: () {
+                  Navigator.of(context).pop(false);
+                  _generateReport(); // Generate report instead of leaving
+                },
+                child: const Text(
+                  'Generate Report',
+                  style: TextStyle(color: Colors.blue),
+                ),
+              ),
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(true),
+              child: const Text(
+                'End Session',
+                style: TextStyle(color: Colors.red),
+              ),
+            ),
+          ],
+        ),
+      );
+
+      if (shouldLeave == true) {
+        // User confirmed they want to leave
+        await _endAnalysisSession();
+        if (mounted) {
+          Navigator.of(context).pop();
+        }
+      }
+    } else {
+      // No active analysis, just go back normally
+      Navigator.of(context).pop();
+    }
+  }
+
+  /// Properly end the analysis session and clean up resources
+  Future<void> _endAnalysisSession() async {
+    print('🔚 Ending analysis session and cleaning up resources...');
+    
+    try {
+      // Stop auto-scan if running
+      if (_autoScanEnabled) {
+        print('🔚 Stopping auto-scan...');
+        _stopAutoScan();
+      }
+      
+      // Stop VLC player and RTSP stream
+      print('🔚 Stopping RTSP stream...');
+      if (_vlcViewController.value.isPlaying) {
+        _vlcViewController.stop();
+      }
+      
+      // Update UI state to show session ended
+      if (mounted) {
+        setState(() {
+          _isPlaying = false;
+          _isConnected = false;
+          _isLoading = false;
+        });
+      }
+      
+      // Show user feedback that session is ending
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('📋 Analysis session completed - Report generated'),
+            backgroundColor: Colors.blue,
+            duration: Duration(seconds: 3),
+          ),
+        );
+      }
+      
+      print('✅ Analysis session ended successfully');
+      
+    } catch (e) {
+      print('❌ Error ending analysis session: $e');
+      // Don't throw error, just log it - we still want to navigate to report
     }
   }
 
@@ -1440,9 +1660,14 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: Colors.grey[50],
-      body: SafeArea(
+    return WillPopScope(
+      onWillPop: () async {
+        await _handleBackNavigation();
+        return false; // Always return false, let _handleBackNavigation() handle the actual navigation
+      },
+      child: Scaffold(
+        backgroundColor: Colors.grey[50],
+        body: SafeArea(
         child: Column(
           children: [
             // Modern App Bar
@@ -1464,7 +1689,7 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> {
                         color: Colors.grey[600],
                         size: 20,
                       ),
-                      onPressed: () => Navigator.of(context).pop(),
+                      onPressed: () => _handleBackNavigation(),
                     ),
                   ),
                   const SizedBox(width: 16),
@@ -1804,6 +2029,25 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> {
                                 ],
                               ),
                               const SizedBox(height: 16),
+                              
+                              // Camera Calibration Button
+                              Container(
+                                width: double.infinity,
+                                margin: const EdgeInsets.only(bottom: 16),
+                                child: ElevatedButton.icon(
+                                  onPressed: _isMovingCamera ? null : () => _performCameraCalibration(),
+                                  icon: const Icon(Icons.settings_remote, size: 18),
+                                  label: const Text('Calibrate Camera (Right → Left)'),
+                                  style: ElevatedButton.styleFrom(
+                                    backgroundColor: Colors.orange,
+                                    foregroundColor: Colors.white,
+                                    padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
+                                    shape: RoundedRectangleBorder(
+                                      borderRadius: BorderRadius.circular(8),
+                                    ),
+                                  ),
+                                ),
+                              ),
                               
                               // Direction Controls
                               Column(
@@ -2272,7 +2516,8 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> {
           ],
         ),
       ),
-    );
+    ),
+    ); // Close WillPopScope
   }
 
   Widget _buildControlCard({

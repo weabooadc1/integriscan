@@ -692,4 +692,75 @@ class PTZService {
       'supported': false, // Indicates this is simulated data
     };
   }
+
+  /// Calibrate AMCREST camera by panning fully right then fully left
+  /// This ensures the camera is properly calibrated and positioned for auto-scan
+  static Future<bool> calibrateCamera(String rtspUrl) async {
+    print('🔧 AMCREST IP2M-841B: Starting simple camera calibration (Right → Left)...');
+    
+    try {
+      // Step 1: Pan all the way to the right
+      print('➡️ CALIBRATION: Panning all the way RIGHT...');
+      bool rightSuccess = await _sendCameraCommand(rtspUrl, 'action=start&channel=0&code=Right&arg1=0&arg2=8&arg3=0');
+      
+      if (rightSuccess) {
+        // Pan right for full range
+        await Future.delayed(Duration(seconds: 5));
+        await _sendCameraCommand(rtspUrl, 'action=stop&channel=0&code=Right&arg1=0&arg2=8&arg3=0');
+        
+        // Brief pause
+        await Future.delayed(Duration(seconds: 1));
+        
+        // Step 2: Pan all the way to the left
+        print('⬅️ CALIBRATION: Panning all the way LEFT...');
+        bool leftSuccess = await _sendCameraCommand(rtspUrl, 'action=start&channel=0&code=Left&arg1=0&arg2=8&arg3=0');
+        
+        if (leftSuccess) {
+          // Pan left for full range
+          await Future.delayed(Duration(seconds: 5));
+          await _sendCameraCommand(rtspUrl, 'action=stop&channel=0&code=Left&arg1=0&arg2=8&arg3=0');
+          
+          print('✅ AMCREST IP2M-841B: Simple calibration completed (Right → Left)!');
+          return true;
+        } else {
+          print('❌ CALIBRATION: Failed to pan left');
+          return false;
+        }
+      } else {
+        print('❌ CALIBRATION: Failed to pan right');
+        return false;
+      }
+    } catch (e) {
+      print('❌ CALIBRATION: Exception during camera calibration: $e');
+      return false;
+    }
+  }
+
+  /// Quick calibration with reduced movement time (for faster setup)
+  static Future<bool> quickCalibrateCamera(String rtspUrl) async {
+    print('⚡ AMCREST IP2M-841B: Quick calibration (Right → Left)...');
+    
+    try {
+      // Quick right pan
+      print('➡️ QUICK CALIBRATION: Pan right...');
+      await _sendCameraCommand(rtspUrl, 'action=start&channel=0&code=Right&arg1=0&arg2=6&arg3=0');
+      await Future.delayed(Duration(seconds: 3));
+      await _sendCameraCommand(rtspUrl, 'action=stop&channel=0&code=Right&arg1=0&arg2=6&arg3=0');
+      
+      // Brief pause
+      await Future.delayed(Duration(seconds: 1));
+      
+      // Quick left pan
+      print('⬅️ QUICK CALIBRATION: Pan left...');
+      await _sendCameraCommand(rtspUrl, 'action=start&channel=0&code=Left&arg1=0&arg2=6&arg3=0');
+      await Future.delayed(Duration(seconds: 3));
+      await _sendCameraCommand(rtspUrl, 'action=stop&channel=0&code=Left&arg1=0&arg2=6&arg3=0');
+      
+      print('✅ AMCREST IP2M-841B: Quick calibration completed!');
+      return true;
+    } catch (e) {
+      print('❌ QUICK CALIBRATION: Exception: $e');
+      return false;
+    }
+  }
 }

@@ -575,11 +575,6 @@ class ReportDetailScreen extends StatelessWidget {
                 );
               },
             ),
-            const SizedBox(height: 12),
-            // Secondary button to go back to analysis
-            LightButton(text: 'Back to analysis', press: () {
-                Navigator.of(context).pop(); // Just go back to analysis screen
-              },),
           ] else ...[
             // Show when viewing from reports list - just go back
             PrimaryButton(
