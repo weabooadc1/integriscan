@@ -3,7 +3,6 @@ import 'package:integriscan/models/report_models.dart';
 import 'package:integriscan/services/recommendations_service.dart';
 import 'package:integriscan/services/firebase_storage_service.dart';
 import 'package:integriscan/component/primarybutton.dart';
-import 'package:integriscan/component/lightbutton.dart';
 import 'dart:io';
 
 class ReportDetailScreen extends StatelessWidget {
