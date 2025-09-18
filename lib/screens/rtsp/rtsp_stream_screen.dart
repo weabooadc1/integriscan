@@ -31,8 +31,8 @@ enum AutoScanState {
   stabilizing
 }
 
-class _RtspStreamScreenState extends State<RtspStreamScreen> {
-  late VlcPlayerController _vlcViewController;
+class _RtspStreamScreenState extends State<RtspStreamScreen> with WidgetsBindingObserver {
+  VlcPlayerController? _vlcViewController;
   bool _isPlaying = true;
   bool _isConnected = false;
   bool _isLoading = true;
@@ -67,16 +67,55 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> {
   
   // Bounding box display timing - removed since handled by auto-scan states
   bool _showBoundingBoxes = true;
+  // Navigation guard to prevent setState while navigating away
+  bool _isNavigating = false;
 
   @override
   void initState() {
     super.initState();
+    // Add lifecycle observer for memory management
+    WidgetsBinding.instance.addObserver(this);
+    
     _validateRtspUrl(); // Validate URL format first
-    _initializeVLC();
-    _initializeTFLite();
-    _initializePTZ();
-    // Attempt background sync for all unsynced reports on screen load
-    _syncUnsyncedReportsForCurrentUser();
+    
+    // Initialize components with proper sequencing and error handling
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _initializeComponents();
+    });
+  }
+  
+  /// Initialize all components with proper error handling and sequencing
+  void _initializeComponents() async {
+    try {
+      // Initialize VLC first
+      _initializeVLC();
+      
+      // Wait a moment before initializing TFLite
+      await Future.delayed(const Duration(milliseconds: 500));
+      
+      // Initialize TFLite (async but void return)
+      _initializeTFLite();
+      
+      // Initialize PTZ after a small delay
+      await Future.delayed(const Duration(milliseconds: 300));
+      _initializePTZ();
+      
+      // Finally, attempt background sync for all unsynced reports
+      await Future.delayed(const Duration(seconds: 1));
+      _syncUnsyncedReportsForCurrentUser();
+      
+    } catch (e) {
+      print('🚨 Error during component initialization: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Initialization error: $e'),
+            backgroundColor: Colors.red,
+            duration: const Duration(seconds: 5),
+          ),
+        );
+      }
+    }
   }
   
   /// Validate and provide suggestions for RTSP URL format
@@ -193,68 +232,71 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> {
   void _initializeVLC() {
     print('🎬 Initializing VLC with RTSP URL: ${widget.rtspUrl}');
     
-    _vlcViewController = VlcPlayerController.network(
-      widget.rtspUrl,
-      hwAcc: HwAcc.full,
-      autoPlay: true,
-      options: VlcPlayerOptions(
-        advanced: VlcAdvancedOptions([
-          '--network-caching=3000',      // Increased for WiFi stability
-          '--rtsp-tcp',                  // Force TCP (more reliable than UDP)
-          '--live-caching=3000',         // Increased live buffer
-          '--rtsp-frame-buffer-size=1000000', // Larger frame buffer
-          '--rtsp-timeout=30',           // 30 second timeout
-          '--tcp-caching=3000',          // TCP caching
-          '--no-audio',                  // Disable audio for stability
-          '--rtsp-kasenna',              // Better RTSP compatibility
-          '--rtsp-wmserver',             // Windows Media Server compatibility
-          '--verbose=2',                 // Enable detailed logging
-        ]),
-        video: VlcVideoOptions([
-          '--no-video-title-show',
-          '--drop-late-frames',          // Drop frames if behind
-          '--skip-frames',               // Skip frames to maintain sync
-        ]),
-        audio: VlcAudioOptions([
-          '--no-audio',                  // Explicitly disable audio
-        ]),
-        subtitle: VlcSubtitleOptions([]),
-        rtp: VlcRtpOptions([
-          '--rtsp-tcp',                  // Ensure TCP is used
-          '--rtp-max-src=1',             // Limit RTP sources
-        ]),
-      ),
-    );
+    try {
+      _vlcViewController = VlcPlayerController.network(
+        widget.rtspUrl,
+        hwAcc: HwAcc.full,
+        autoPlay: true,
+        options: VlcPlayerOptions(
+          advanced: VlcAdvancedOptions([
+            '--network-caching=3000',      // Increased for WiFi stability
+            '--rtsp-tcp',                  // Force TCP (more reliable than UDP)
+            '--live-caching=3000',         // Increased live buffer
+            '--rtsp-frame-buffer-size=1000000', // Larger frame buffer
+            '--rtsp-timeout=30',           // 30 second timeout
+            '--tcp-caching=3000',          // TCP caching
+            '--no-audio',                  // Disable audio for stability
+            '--rtsp-kasenna',              // Better RTSP compatibility
+            '--rtsp-wmserver',             // Windows Media Server compatibility
+            '--verbose=2',                 // Enable detailed logging
+          ]),
+          video: VlcVideoOptions([
+            '--no-video-title-show',
+            '--drop-late-frames',          // Drop frames if behind
+            '--skip-frames',               // Skip frames to maintain sync
+          ]),
+          audio: VlcAudioOptions([
+            '--no-audio',                  // Explicitly disable audio
+          ]),
+          subtitle: VlcSubtitleOptions([]),
+          rtp: VlcRtpOptions([
+            '--rtsp-tcp',                  // Ensure TCP is used
+            '--rtp-max-src=1',             // Limit RTP sources
+          ]),
+        ),
+      );
     
     // Add listeners for connection status
-    _vlcViewController.addListener(() {
-      if (mounted) {
-        final isPlaying = _vlcViewController.value.isPlaying;
-        final isInitialized = _vlcViewController.value.isInitialized;
-        final hasError = _vlcViewController.value.hasError;
-        final playbackState = _vlcViewController.value.playingState;
+    _vlcViewController?.addListener(() {
+      if (mounted && !_isNavigating && _vlcViewController != null) {
+        final isPlaying = _vlcViewController!.value.isPlaying;
+        final isInitialized = _vlcViewController!.value.isInitialized;
+        final hasError = _vlcViewController!.value.hasError;
+        final playbackState = _vlcViewController!.value.playingState;
         
         print('🎬 VLC State Update:');
         print('  - Playing: $isPlaying');
         print('  - Initialized: $isInitialized');
         print('  - Has Error: $hasError');
         print('  - Playback State: $playbackState');
-        print('  - Position: ${_vlcViewController.value.position}');
-        print('  - Duration: ${_vlcViewController.value.duration}');
+        print('  - Position: ${_vlcViewController!.value.position}');
+        print('  - Duration: ${_vlcViewController!.value.duration}');
         
-        setState(() {
-          _isConnected = isPlaying && isInitialized && !hasError;
-          _isLoading = !isInitialized && !hasError;
-        });
+        if (mounted && !_isNavigating) {
+          setState(() {
+            _isConnected = isPlaying && isInitialized && !hasError;
+            _isLoading = !isInitialized && !hasError;
+          });
+        }
         
         if (hasError) {
-          final errorMsg = _vlcViewController.value.errorDescription.isEmpty 
+          final errorMsg = _vlcViewController!.value.errorDescription.isEmpty 
               ? 'Unknown VLC error' 
-              : _vlcViewController.value.errorDescription;
+              : _vlcViewController!.value.errorDescription;
           print('🎬 VLC Error detected: $errorMsg');
           
           // Show detailed error to user
-          if (mounted) {
+          if (mounted && !_isNavigating) {
             ScaffoldMessenger.of(context).showSnackBar(
               SnackBar(
                 content: Text('RTSP Connection Error: $errorMsg'),
@@ -271,16 +313,43 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> {
         }
       }
     });
+    } catch (e) {
+      print('🎬 VLC Controller creation failed: $e');
+      if (mounted) {
+        setState(() {
+          _isConnected = false;
+          _isLoading = false;
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Failed to initialize video player: $e'),
+            backgroundColor: Colors.red,
+            duration: const Duration(seconds: 8),
+            action: SnackBarAction(
+              label: 'Retry',
+              textColor: Colors.white,
+              onPressed: () => _retryConnection(),
+            ),
+          ),
+        );
+      }
+    }
   }
   
   /// Retry RTSP connection
   void _retryConnection() {
     print('🔄 Retrying RTSP connection...');
-    _vlcViewController.dispose();
-    setState(() {
-      _isConnected = false;
-      _isLoading = true;
-    });
+    try {
+      _vlcViewController?.dispose();
+    } catch (e) {
+      print('🔄 Error disposing VLC controller: $e');
+    }
+    if (mounted && !_isNavigating) {
+      setState(() {
+        _isConnected = false;
+        _isLoading = true;
+      });
+    }
     
     // Wait a moment before retrying
     Future.delayed(const Duration(seconds: 2), () {
@@ -301,12 +370,14 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> {
       'rtsp://admin:admin123@192.168.1.14:554/cam1',                              // Cam1
     ];
     
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('🔍 Testing alternative RTSP URLs for your AMCREST camera...'),
-        duration: Duration(seconds: 3),
-      ),
-    );
+    if (mounted && !_isNavigating) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('🔍 Testing alternative RTSP URLs for your AMCREST camera...'),
+          duration: Duration(seconds: 3),
+        ),
+      );
+    }
     
     print('🔍 Testing ${alternativeUrls.length} alternative RTSP URLs...');
     
@@ -341,7 +412,7 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> {
             connectionSuccessful = true;
             print('✅ URL ${i + 1} SUCCESSFUL: $testUrl');
             
-            if (mounted) {
+            if (mounted && !_isNavigating) {
               ScaffoldMessenger.of(context).showSnackBar(
                 SnackBar(
                   content: Text('✅ Found working URL! Tap to use: ${testUrl.split('@')[1]}'),
@@ -390,7 +461,7 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> {
       }
     }
     
-    if (mounted) {
+    if (mounted && !_isNavigating) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text('🔍 Alternative URL testing completed. Check console for results.'),
@@ -405,7 +476,11 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> {
     print('🔄 Switching to alternative URL: $newUrl');
     
     // Dispose current controller
-    _vlcViewController.dispose();
+    try {
+      _vlcViewController?.dispose();
+    } catch (e) {
+      print('🔄 Error disposing VLC controller in _useAlternativeUrl: $e');
+    }
     
     setState(() {
       _isConnected = false;
@@ -450,12 +525,12 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> {
         );
         
         // Add the listener again (same as in _initializeVLC)
-        _vlcViewController.addListener(() {
-          if (mounted) {
-            final isPlaying = _vlcViewController.value.isPlaying;
-            final isInitialized = _vlcViewController.value.isInitialized;
-            final hasError = _vlcViewController.value.hasError;
-            final playbackState = _vlcViewController.value.playingState;
+        _vlcViewController?.addListener(() {
+          if (mounted && !_isNavigating && _vlcViewController != null) {
+            final isPlaying = _vlcViewController!.value.isPlaying;
+            final isInitialized = _vlcViewController!.value.isInitialized;
+            final hasError = _vlcViewController!.value.hasError;
+            final playbackState = _vlcViewController!.value.playingState;
             
             print('🎬 VLC State Update (Alternative URL):');
             print('  - Playing: $isPlaying');
@@ -463,34 +538,40 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> {
             print('  - Has Error: $hasError');
             print('  - Playback State: $playbackState');
             
-            setState(() {
-              _isConnected = isPlaying && isInitialized && !hasError;
-              _isLoading = !isInitialized && !hasError;
-            });
+            if (mounted && !_isNavigating) {
+              setState(() {
+                _isConnected = isPlaying && isInitialized && !hasError;
+                _isLoading = !isInitialized && !hasError;
+              });
+            }
             
             if (hasError) {
-              final errorMsg = _vlcViewController.value.errorDescription.isEmpty 
+              final errorMsg = _vlcViewController!.value.errorDescription.isEmpty 
                   ? 'Unknown VLC error' 
-                  : _vlcViewController.value.errorDescription;
+                  : _vlcViewController!.value.errorDescription;
               print('🎬 VLC Error with alternative URL: $errorMsg');
             } else if (isPlaying) {
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(
-                  content: Text('🎉 Alternative URL connected successfully!'),
-                  backgroundColor: Colors.green,
-                  duration: Duration(seconds: 3),
-                ),
-              );
+              if (mounted && !_isNavigating) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                    content: Text('🎉 Alternative URL connected successfully!'),
+                    backgroundColor: Colors.green,
+                    duration: Duration(seconds: 3),
+                  ),
+                );
+              }
             }
           }
         });
         
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('🔄 Connecting with alternative URL: ${newUrl.split('@')[1]}'),
-            duration: const Duration(seconds: 3),
-          ),
-        );
+        if (mounted && !_isNavigating) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('🔄 Connecting with alternative URL: ${newUrl.split('@')[1]}'),
+              duration: const Duration(seconds: 3),
+            ),
+          );
+        }
       }
     });
   }
@@ -501,7 +582,7 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> {
       final success = await TFLiteService.initialize();
       print('🚀 RTSP Screen: TFLite initialization result: $success');
       
-      if (success && mounted) {
+  if (success && mounted && !_isNavigating) {
         print('🚀 RTSP Screen: TFLite initialization successful, testing model...');
         // Test the model with a sample image
         await _testModelWithSampleImage();
@@ -510,24 +591,26 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> {
         final modelInfo = TFLiteService.getModelInfo();
         print('🚀 RTSP Screen: Model info after initialization: $modelInfo');
         
-        if (modelInfo['mockMode'] == true) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: const Text('AI Analysis ready! (Mock Mode - for testing)'),
-              backgroundColor: Colors.orange,
-              behavior: SnackBarBehavior.floating,
-            ),
-          );
-        } else {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: const Text('AI Analysis ready!'),
-              backgroundColor: Colors.green,
-              behavior: SnackBarBehavior.floating,
-            ),
-          );
+        if (mounted && !_isNavigating) {
+          if (modelInfo['mockMode'] == true) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: const Text('AI Analysis ready! (Mock Mode - for testing)'),
+                backgroundColor: Colors.orange,
+                behavior: SnackBarBehavior.floating,
+              ),
+            );
+          } else {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: const Text('AI Analysis ready!'),
+                backgroundColor: Colors.green,
+                behavior: SnackBarBehavior.floating,
+              ),
+            );
+          }
         }
-      } else if (mounted) {
+  } else if (mounted && !_isNavigating) {
         print('🚀 RTSP Screen: TFLite initialization failed');
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -539,7 +622,7 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> {
       }
     } catch (e) {
       print('🚀 RTSP Screen: Exception during TFLite initialization: $e');
-      if (mounted) {
+      if (mounted && !_isNavigating) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text('AI model initialization error: $e'),
@@ -556,20 +639,24 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> {
     
     // For IP2M-841B, enable PTZ by default since we know it works
     // Also enable debug mode by default for testing
-    setState(() {
-      _ptzSupported = true;
-      _ptzDebugMode = true; // Enable debug mode by default for testing
-    });
+    if (mounted && !_isNavigating) {
+      setState(() {
+        _ptzSupported = true;
+        _ptzDebugMode = true; // Enable debug mode by default for testing
+      });
+    }
     
     print('🎥 PTZ: Enabled with debug mode for testing');
     
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('🔧 PTZ Debug Mode enabled for testing - Auto-scan ready!'),
-        backgroundColor: Colors.purple,
-        duration: Duration(seconds: 3),
-      ),
-    );
+    if (mounted && !_isNavigating) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('🔧 PTZ Debug Mode enabled for testing - Auto-scan ready!'),
+          backgroundColor: Colors.purple,
+          duration: Duration(seconds: 3),
+        ),
+      );
+    }
     
     // Optional: Still test real PTZ in background but don't block functionality
     _testRealPTZInBackground();
@@ -685,8 +772,8 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> {
       
       // Test if the GlobalKey is properly attached
       print('🎥 Player key context: ${_playerKey.currentContext != null}');
-      print('🎥 VLC Controller initialized: ${_vlcViewController.value.isInitialized}');
-      print('🎥 VLC Controller playing: ${_vlcViewController.value.isPlaying}');
+      print('🎥 VLC Controller initialized: ${_vlcViewController?.value.isInitialized ?? false}');
+      print('🎥 VLC Controller playing: ${_vlcViewController?.value.isPlaying ?? false}');
       
       final frameBytes = await FrameCaptureService.captureWidget(_playerKey);
       
@@ -761,19 +848,23 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> {
     _autoScanTimer?.cancel();
     _autoScanTimer = null;
     
-    setState(() {
-      _currentScanState = AutoScanState.idle;
-      _currentDetections = [];
-      _showBoundingBoxes = true;
-    });
+    if (mounted && !_isNavigating) {
+      setState(() {
+        _currentScanState = AutoScanState.idle;
+        _currentDetections = [];
+        _showBoundingBoxes = true;
+      });
+    }
 
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('Auto-scan stopped'),
-        backgroundColor: Colors.orange,
-        duration: Duration(seconds: 2),
-      ),
-    );
+    if (mounted && !_isNavigating) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Auto-scan stopped'),
+          backgroundColor: Colors.orange,
+          duration: Duration(seconds: 2),
+        ),
+      );
+    }
   }
 
   // New unified auto-scan cycle method
@@ -790,9 +881,11 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> {
     try {
       // State 1: Initial Analysis
       print('📊 Auto-scan: Step 1 - Running analysis');
-      setState(() {
-        _currentScanState = AutoScanState.analyzing;
-      });
+      if (mounted) {
+        setState(() {
+          _currentScanState = AutoScanState.analyzing;
+        });
+      }
 
       final analysisResult = await _performSingleAnalysis();
       print('📊 Analysis result: $analysisResult');
@@ -804,47 +897,58 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> {
 
       // State 2: Show Detection Results (5 seconds)
       print('🎯 Auto-scan: Step 2 - Showing results for 5 seconds');
-      setState(() {
-        _currentScanState = AutoScanState.showingResults;
-        
-        if (analysisResult != null && analysisResult['isDamageDetected'] == true) {
-          // Show bounding boxes for damage detection
-          final detection = {
-            'label': analysisResult['damageType'] ?? 'Unknown',
-            'confidence': analysisResult['confidence'] ?? 0.0,
-            'box': {
-              'x': 0.3,
-              'y': 0.3,
-              'width': 0.4,
-              'height': 0.4,
-            }
-          };
-          _currentDetections = [detection];
-          _showBoundingBoxes = true;
-          print('🎯 Showing bounding boxes for detection: ${detection['label']}');
-        } else {
-          _currentDetections = [];
-          _showBoundingBoxes = false;
-          print('🎯 No damage detected, hiding bounding boxes');
-        }
-      });
+      if (mounted) {
+        setState(() {
+          _currentScanState = AutoScanState.showingResults;
+          
+          if (analysisResult != null && analysisResult['isDamageDetected'] == true) {
+            // Show bounding boxes for damage detection
+            final detection = {
+              'label': analysisResult['damageType'] ?? 'Unknown',
+              'confidence': analysisResult['confidence'] ?? 0.0,
+              'box': {
+                'x': 0.3,
+                'y': 0.3,
+                'width': 0.4,
+                'height': 0.4,
+              }
+            };
+            _currentDetections = [detection];
+            _showBoundingBoxes = true;
+            print('🎯 Showing bounding boxes for detection: ${detection['label']}');
+          } else {
+            _currentDetections = [];
+            _showBoundingBoxes = false;
+            print('🎯 No damage detected, hiding bounding boxes');
+          }
+        });
+      }
 
       // Wait exactly 5 seconds
       print('⏰ Auto-scan: Setting 5-second timer for results display');
       _autoScanTimer = Timer(const Duration(seconds: 5), () async {
         print('⏰ 5-second timer triggered');
-        if (!_autoScanEnabled || !mounted) {
-          print('❌ Auto-scan aborted in timer callback');
+        // Double-check mounted state and auto-scan enabled to prevent setState on disposed widget
+        if (!_autoScanEnabled || !mounted || _isNavigating) {
+          print('❌ Auto-scan aborted in timer callback - mounted: $mounted, enabled: $_autoScanEnabled, navigating: $_isNavigating');
+          return;
+        }
+
+        // Additional safety check - verify the timer hasn't been cancelled
+        if (_autoScanTimer == null) {
+          print('❌ Auto-scan timer was cancelled');
           return;
         }
 
         // State 3: Camera Movement
         print('📹 Auto-scan: Step 3 - Moving camera');
-        setState(() {
-          _currentScanState = AutoScanState.movingCamera;
-          _showBoundingBoxes = false; // Hide bounding boxes during movement
-          _currentDetections = [];
-        });
+        if (mounted && !_isNavigating) {
+          setState(() {
+            _currentScanState = AutoScanState.movingCamera;
+            _showBoundingBoxes = false; // Hide bounding boxes during movement
+            _currentDetections = [];
+          });
+        }
 
         final moveSuccess = await _performCameraMovement();
         print('📹 Camera movement result: $moveSuccess');
@@ -857,9 +961,11 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> {
         // State 4: Camera Stabilization
         if (moveSuccess) {
           print('⏳ Auto-scan: Step 4 - Camera stabilization (3 seconds)');
-          setState(() {
-            _currentScanState = AutoScanState.stabilizing;
-          });
+          if (mounted) {
+            setState(() {
+              _currentScanState = AutoScanState.stabilizing;
+            });
+          }
 
           _autoScanTimer = Timer(const Duration(seconds: 3), () {
             print('⏳ Stabilization timer triggered');
@@ -930,19 +1036,21 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> {
           print('🤖 Analysis result: ${result['damageType']} (${(result['confidence'] * 100).toInt()}%)');
           
           // Update statistics
-          setState(() {
-            _totalFramesAnalyzed++;
-            if (result['isDamageDetected'] == true) {
-              _damagesDetected++;
-              
-              // Save to detection history if damage found
-              if (result['confidence'] > 0.5) {
-                print('💾 Saving detection to history');
-                _saveDetectionToHistory(result, frameBytes);
+          if (mounted) {
+            setState(() {
+              _totalFramesAnalyzed++;
+              if (result['isDamageDetected'] == true) {
+                _damagesDetected++;
+                
+                // Save to detection history if damage found
+                if (result['confidence'] > 0.5) {
+                  print('💾 Saving detection to history');
+                  _saveDetectionToHistory(result, frameBytes);
+                }
               }
-            }
-            _lastAnalysisResult = result; // Store the latest result
-          });
+              _lastAnalysisResult = result; // Store the latest result
+            });
+          }
           
           return result;
         } else {
@@ -970,9 +1078,11 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> {
     }
 
     print('🎬 Auto-scan: Setting movement state to true');
-    setState(() {
-      _isMovingCamera = true;
-    });
+      if (mounted && !_isNavigating) {
+        setState(() {
+          _isMovingCamera = true;
+        });
+      }
 
     try {
       bool success = false;
@@ -1052,8 +1162,7 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> {
       }
       return false;
     } finally {
-      print('🎬 Auto-scan: Setting _isMovingCamera = false in finally block');
-      if (mounted) {
+      if (mounted && !_isNavigating) {
         setState(() {
           _isMovingCamera = false;
         });
@@ -1156,7 +1265,7 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> {
         }
       }
       
-      if (success) {
+      if (success && mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(_ptzDebugMode 
@@ -1167,7 +1276,7 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> {
           ),
         );
         print('✅ Manual PTZ: $directionName movement completed successfully');
-      } else {
+      } else if (!success && mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text('❌ PTZ $directionName movement failed'),
@@ -1179,13 +1288,15 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> {
       }
     } catch (e) {
       print('❌ Manual PTZ: Error during ${direction.name.toUpperCase()} movement: $e');
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('PTZ error: ${e.toString().substring(0, 30)}...'),
-          backgroundColor: Colors.red,
-          duration: const Duration(seconds: 2),
-        ),
-      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('PTZ error: ${e.toString().substring(0, 30)}...'),
+            backgroundColor: Colors.red,
+            duration: const Duration(seconds: 2),
+          ),
+        );
+      }
     } finally {
       if (mounted) {
         setState(() {
@@ -1343,13 +1454,15 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> {
     print('Generate report called. Detection history size: ${_detectionHistory.length}');
     
     if (_detectionHistory.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('No detections found to generate report. Start analysis first and wait for damage detection.'),
-          backgroundColor: Colors.orange,
-          duration: Duration(seconds: 4),
-        ),
-      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('No detections found to generate report. Start analysis first and wait for damage detection.'),
+            backgroundColor: Colors.orange,
+            duration: Duration(seconds: 4),
+          ),
+        );
+      }
       return;
     }
 
@@ -1380,6 +1493,8 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> {
     print('=== End Detection History Debug ===');
 
     try {
+      if (!mounted) return; // Check mounted before using context
+      
       final authProvider = Provider.of<AuthProvider>(context, listen: false);
       final userId = authProvider.user?.uid ?? 'anonymous';
       
@@ -1393,6 +1508,27 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> {
       );
 
       print('Report generated successfully: ${report.id}');
+      
+      // Validate report data before navigation
+      print('🔍 Validating report data before navigation...');
+      print('🔍 Report ID: ${report.id}');
+      print('🔍 Report detections count: ${report.detections.length}');
+      
+      // Check each detection for valid image paths
+      for (int i = 0; i < report.detections.length; i++) {
+        final detection = report.detections[i];
+        print('🔍 Detection $i: ${detection.damageType} - Image: ${detection.imagePath}');
+        
+        // Validate image file exists
+        if (detection.imagePath.isNotEmpty) {
+          final imageFile = File(detection.imagePath);
+          final exists = await imageFile.exists();
+          print('🔍   Image file exists: $exists');
+          if (!exists) {
+            print('⚠️   WARNING: Image file does not exist for detection $i');
+          }
+        }
+      }
 
       if (mounted) {
         // Show success message
@@ -1417,17 +1553,143 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> {
         // End the analysis session before navigating to report
         await _endAnalysisSession();
 
+        // Add extra delay and ensure all timers are cancelled
+        await Future.delayed(const Duration(milliseconds: 300));
+        
+        // Force cancel all remaining timers before navigation
+        _autoScanTimer?.cancel();
+        _autoScanTimer = null;
+        _ptzMovementTimer?.cancel();
+        _ptzMovementTimer = null;
+
+        // Add a small delay to ensure all resources are properly cleaned up
+        await Future.delayed(const Duration(milliseconds: 500));
+
+        // More aggressive VLC cleanup to prevent native crashes
+        if (_vlcViewController != null) {
+          try {
+            print('🔚 Stopping VLC player completely...');
+            
+            // Stop playback first
+            if (_vlcViewController!.value.isPlaying) {
+              await _vlcViewController!.stop();
+              print('🔚 VLC stopped');
+            }
+            
+            // Clear any video surface/texture to free video buffers
+            try {
+              await _vlcViewController!.setVideoAspectRatio('');
+              await _vlcViewController!.setVideoScale(0.0);
+            } catch (e) {
+              print('Error clearing VLC video settings: $e');
+            }
+            
+            // Wait for VLC to fully stop and release video buffers
+            await Future.delayed(const Duration(milliseconds: 500));
+            
+            // Dispose the controller
+            await _vlcViewController!.dispose();
+            _vlcViewController = null;
+            print('🔚 VLC disposed');
+            
+            // Extra delay to ensure native resources are released
+            await Future.delayed(const Duration(milliseconds: 700));
+            
+          } catch (e) {
+            print('Error disposing VLC controller: $e');
+            // Still set to null even if disposal fails
+            _vlcViewController = null;
+          }
+        }
+
+        // Force multiple garbage collections to free up native memory
+        print('🔚 Forcing garbage collection...');
+        
+        // Clear any remaining detection images from memory BEFORE garbage collection
+        _detectionHistory.clear();
+        _currentDetections.clear();
+        _lastAnalysisResult = null;
+        
+        // Force aggressive memory cleanup
+        await Future.delayed(const Duration(milliseconds: 100));
+        
+        // Clear any cached images from the image cache
+        try {
+          imageCache.clear();
+          imageCache.clearLiveImages();
+          print('🔚 Image cache cleared');
+        } catch (e) {
+          print('Error clearing image cache: $e');
+        }
+        
+        // Additional delay for native buffer cleanup
+        await Future.delayed(const Duration(milliseconds: 300));
+
         // Use pushReplacement to prevent going back to RTSP screen
         // This indicates that the analysis session is complete
-        Navigator.pushReplacement(
-          context,
-          MaterialPageRoute(
-            builder: (context) => ReportDetailScreen(
-              report: report,
-              fromAnalysis: true, // Indicate this came from analysis
-            ),
-          ),
-        );
+        if (mounted && !_isNavigating) {
+          _isNavigating = true; // prevent further setState during navigation
+          
+          // Final safety check - ensure all timers are cancelled before navigation
+          _autoScanTimer?.cancel();
+          _autoScanTimer = null;
+          _ptzMovementTimer?.cancel();
+          _ptzMovementTimer = null;
+          
+          // Remove lifecycle observer immediately to prevent any further callbacks
+          try {
+            WidgetsBinding.instance.removeObserver(this);
+          } catch (e) {
+            print('Error removing lifecycle observer: $e');
+          }
+          
+          // Add a final delay to ensure all native cleanup is complete
+          print('🔚 Final delay before navigation to ensure stability...');
+          await Future.delayed(const Duration(milliseconds: 1000));
+          
+          // Final mounted check before navigation
+          if (!mounted) {
+            print('❌ Widget disposed during final delay, aborting navigation');
+            return;
+          }
+          
+          try {
+            print('🔚 Navigating to ReportDetailScreen...');
+            Navigator.pushReplacement(
+              context,
+              MaterialPageRoute(
+                builder: (context) => ReportDetailScreen(
+                  report: report,
+                  fromAnalysis: true, // Indicate this came from analysis
+                ),
+              ),
+            );
+          } catch (e) {
+            print('❌ Navigation error: $e');
+            // Fallback: try regular navigation if pushReplacement fails
+            try {
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (context) => ReportDetailScreen(
+                    report: report,
+                    fromAnalysis: true,
+                  ),
+                ),
+              );
+            } catch (e2) {
+              print('❌ Fallback navigation also failed: $e2');
+              // Show error to user
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(
+                  content: Text('Navigation error. Report saved: ${report.id}'),
+                  backgroundColor: Colors.orange,
+                  duration: const Duration(seconds: 5),
+                ),
+              );
+            }
+          }
+        }
       }
     } catch (e) {
       print('Error generating report: $e');
@@ -1513,29 +1775,55 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> {
     print('🔚 Ending analysis session and cleaning up resources...');
     
     try {
-      // Stop auto-scan if running
+      // Stop auto-scan if running - this must be first to cancel all timers
       if (_autoScanEnabled) {
         print('🔚 Stopping auto-scan...');
         _stopAutoScan();
+        // Give extra time for any pending timer callbacks to be cancelled
+        await Future.delayed(const Duration(milliseconds: 100));
+      }
+      
+      // Cancel any remaining timers to prevent setState after disposal
+      _autoScanTimer?.cancel();
+      _autoScanTimer = null;
+      _ptzMovementTimer?.cancel(); 
+      _ptzMovementTimer = null;
+      
+      // Dispose TFLite service to free native memory
+      try {
+        print('🔚 Disposing TFLite service...');
+        TFLiteService.dispose();
+        await Future.delayed(const Duration(milliseconds: 100));
+      } catch (e) {
+        print('Error disposing TFLite service: $e');
       }
       
       // Stop VLC player and RTSP stream
       print('🔚 Stopping RTSP stream...');
-      if (_vlcViewController.value.isPlaying) {
-        _vlcViewController.stop();
+      if (_vlcViewController != null) {
+        try {
+          if (_vlcViewController!.value.isPlaying) {
+            await _vlcViewController!.stop();
+          }
+          // Don't dispose here - let the navigation code handle it
+          // to prevent double disposal
+        } catch (e) {
+          print('Error stopping VLC controller: $e');
+        }
       }
       
-      // Update UI state to show session ended
-      if (mounted) {
+      // Update UI state to show session ended - with mounted and navigation checks
+      if (mounted && !_isNavigating) {
         setState(() {
           _isPlaying = false;
           _isConnected = false;
           _isLoading = false;
+          _autoScanEnabled = false; // Ensure auto-scan is disabled
         });
       }
       
-      // Show user feedback that session is ending
-      if (mounted) {
+      // Show user feedback that session is ending - with mounted and navigation checks
+      if (mounted && !_isNavigating) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
             content: Text('📋 Analysis session completed - Report generated'),
@@ -1645,10 +1933,23 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> {
 
   @override
   void dispose() {
+    // Remove lifecycle observer
+    WidgetsBinding.instance.removeObserver(this);
+    
     _stopAutoScan();
     _stopPTZMovement(); // Stop PTZ movement
-    _vlcViewController.dispose();
-    TFLiteService.dispose();
+    
+    try {
+      _vlcViewController?.dispose();
+    } catch (e) {
+      print('🔄 Error disposing VLC controller in dispose: $e');
+    }
+    
+    try {
+      TFLiteService.dispose();
+    } catch (e) {
+      print('🔄 Error disposing TFLite service: $e');
+    }
     
     // CPU Optimization: Clear memory caches
     _detectionHistory.clear(); // Clear in-memory detection history on dispose (logout)
@@ -1656,6 +1957,49 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> {
     _lastAnalysisResult = null;
     
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    super.didChangeAppLifecycleState(state);
+    
+    // Only handle app lifecycle changes if widget is still mounted and not navigating
+    if (!mounted || _isNavigating) {
+      print('🔄 App lifecycle change ignored - widget disposed or navigating');
+      return;
+    }
+    
+    switch (state) {
+      case AppLifecycleState.paused:
+        // App is going to background - reduce resource usage
+        print('🔄 App paused - reducing resource usage');
+        if (_vlcViewController != null && _vlcViewController!.value.isPlaying) {
+          try {
+            _vlcViewController!.pause();
+          } catch (e) {
+            print('Error pausing VLC on app pause: $e');
+          }
+        }
+        _stopAutoScan();
+        break;
+      case AppLifecycleState.resumed:
+        // App is coming back to foreground
+        print('🔄 App resumed - restoring functionality');
+        break;
+      case AppLifecycleState.detached:
+        // App is about to be terminated
+        print('🔄 App detached - cleaning up resources');
+        if (_vlcViewController != null) {
+          try {
+            _vlcViewController!.stop();
+          } catch (e) {
+            print('Error stopping VLC on app detach: $e');
+          }
+        }
+        break;
+      default:
+        break;
+    }
   }
 
   @override
@@ -1777,13 +2121,14 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> {
                   children: [
                     RepaintBoundary(
                       key: _playerKey,
-                      child: VlcPlayer(
-                        controller: _vlcViewController,
-                        aspectRatio: 16 / 9,
-                        placeholder: Container(
-                          color: Colors.black,
-                          child: const Center(
-                            child: Column(
+                      child: _vlcViewController != null 
+                        ? VlcPlayer(
+                            controller: _vlcViewController!,
+                            aspectRatio: 16 / 9,
+                            placeholder: Container(
+                              color: Colors.black,
+                              child: const Center(
+                                child: Column(
                               mainAxisAlignment: MainAxisAlignment.center,
                               children: [
                                 CircularProgressIndicator(
@@ -1801,7 +2146,28 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> {
                             ),
                           ),
                         ),
-                      ),
+                      )
+                      : Container(
+                          color: Colors.black,
+                          child: const Center(
+                            child: Column(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                CircularProgressIndicator(
+                                  color: Colors.white,
+                                ),
+                                SizedBox(height: 16),
+                                Text(
+                                  'Initializing video player...',
+                                  style: TextStyle(
+                                    color: Colors.white,
+                                    fontSize: 16,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
                     ),
                     // Bounding Box Overlay
                     if (_autoScanEnabled && _currentDetections.isNotEmpty && _showBoundingBoxes)
@@ -1923,9 +2289,11 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> {
                               onTap: () {
                                 setState(() {
                                   _isPlaying = !_isPlaying;
-                                  _isPlaying 
-                                      ? _vlcViewController.play() 
-                                      : _vlcViewController.pause();
+                                  if (_vlcViewController != null) {
+                                    _isPlaying 
+                                        ? _vlcViewController!.play() 
+                                        : _vlcViewController!.pause();
+                                  }
                                 });
                               },
                             ),
@@ -1937,7 +2305,7 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> {
                               icon: Icons.stop,
                               color: Colors.red,
                               onTap: () {
-                                _vlcViewController.stop();
+                                _vlcViewController?.stop();
                                 setState(() {
                                   _isPlaying = false;
                                   _isConnected = false;
@@ -2924,7 +3292,7 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> {
         }
       }
       
-      if (success) {
+      if (success && mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(_ptzDebugMode 
@@ -2935,7 +3303,7 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> {
           ),
         );
         print('✅ Zoom: $action completed successfully');
-      } else {
+      } else if (!success && mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text('❌ $action failed'),
@@ -2947,13 +3315,15 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> {
       }
     } catch (e) {
       print('❌ Zoom: Error during ${zoomIn ? 'zoom in' : 'zoom out'}: $e');
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Zoom error: ${e.toString().substring(0, 30)}...'),
-          backgroundColor: Colors.red,
-          duration: const Duration(seconds: 2),
-        ),
-      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Zoom error: ${e.toString().substring(0, 30)}...'),
+            backgroundColor: Colors.red,
+            duration: const Duration(seconds: 2),
+          ),
+        );
+      }
     } finally {
       if (mounted) {
         setState(() {

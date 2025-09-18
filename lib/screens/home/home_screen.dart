@@ -152,7 +152,7 @@ class HomeScreen extends StatelessWidget {
                           ),
                           const SizedBox(height: 12),
                           Text(
-                            'Ready to scan and analyze your documents with integrity verification.',
+                            'Your home visual damage detection solution made accessible',
                             style: TextStyle(
                               color: Colors.white.withOpacity(0.9),
                               fontSize: 14,

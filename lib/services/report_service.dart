@@ -202,6 +202,9 @@ class ReportService {
               'detectionsCount': detections.length, // Add the missing field
               'severityLevel': cloudReport['severityLevel'] ?? 'Low',
               'recommendations': (cloudReport['recommendations'] as List<dynamic>? ?? []).join('|'),
+              'cracksCount': cloudReport['summary']?['cracksCount'] ?? 0,
+              'corrosionCount': cloudReport['summary']?['corrosionCount'] ?? 0,
+              'deformationCount': cloudReport['summary']?['deformationCount'] ?? 0,
               'synced': 1, // Mark as synced since it came from cloud
             });
             
@@ -458,30 +461,36 @@ class ReportService {
   }
 
   static ReportSummary _generateSummary(List<DamageDetection> detections) {
-    int criticalCount = 0;
-    int moderateCount = 0;
-    int minorCount = 0;
+    int cracksCount = 0;
+    int corrosionCount = 0;
+    int deformationCount = 0;
     Set<String> allRecommendations = {};
 
     for (final detection in detections) {
-      switch (detection.severity.toLowerCase()) {
-        case 'high':
-          criticalCount++;
+      // Count by damage type instead of severity
+      switch (detection.damageType.toLowerCase()) {
+        case 'crack':
+        case 'cracks':
+          cracksCount++;
           break;
-        case 'medium':
-          moderateCount++;
+        case 'corrosion':
+        case 'rust':
+        case 'scaling':
+          corrosionCount++;
           break;
-        case 'low':
-          minorCount++;
+        case 'deformation':
+        case 'deform':
+          deformationCount++;
           break;
       }
       allRecommendations.addAll(detection.recommendations);
     }
 
+    // Determine overall severity based on most critical damage type present
     String overallSeverity = 'Low';
-    if (criticalCount > 0) {
+    if (cracksCount > 0 || corrosionCount > 0) {
       overallSeverity = 'Critical';
-    } else if (moderateCount > 0) {
+    } else if (deformationCount > 0) {
       overallSeverity = 'Moderate';
     }
 
@@ -489,9 +498,9 @@ class ReportService {
       overallSeverity: overallSeverity,
       recommendations: allRecommendations.toList(),
       totalDetections: detections.length,
-      criticalCount: criticalCount,
-      moderateCount: moderateCount,
-      minorCount: minorCount,
+      cracksCount: cracksCount,
+      corrosionCount: corrosionCount,
+      deformationCount: deformationCount,
     );
   }
 
@@ -525,14 +534,14 @@ class ReportService {
     for (final reportMap in reportMaps) {
       final detectionMaps = await db.getDetectionsByReport(reportMap['id']);
       final detections = detectionMaps.map((map) => DamageDetection.fromMap(map)).toList();
-      // Build summary with correct counts
+      // Build summary with correct counts based on damage types
       final summary = ReportSummary(
         overallSeverity: reportMap['severityLevel'],
         recommendations: (reportMap['recommendations'] ?? '').toString().split('|'),
         totalDetections: detections.length,
-        criticalCount: detections.where((d) => d.severity == 'High').length,
-        moderateCount: detections.where((d) => d.severity == 'Medium').length,
-        minorCount: detections.where((d) => d.severity == 'Low').length,
+        cracksCount: detections.where((d) => d.damageType.toLowerCase().contains('crack')).length,
+        corrosionCount: detections.where((d) => d.damageType.toLowerCase().contains('corrosion') || d.damageType.toLowerCase().contains('rust') || d.damageType.toLowerCase().contains('scaling')).length,
+        deformationCount: detections.where((d) => d.damageType.toLowerCase().contains('deformation') || d.damageType.toLowerCase().contains('deform')).length,
       );
       reports.add(DetectionReport.fromMap(reportMap, detections: detections, summary: summary));
     }
@@ -552,9 +561,9 @@ class ReportService {
       overallSeverity: reportMap['severityLevel'],
       recommendations: (reportMap['recommendations'] ?? '').toString().split('|'),
       totalDetections: detections.length,
-      criticalCount: detections.where((d) => d.severity == 'High').length,
-      moderateCount: detections.where((d) => d.severity == 'Medium').length,
-      minorCount: detections.where((d) => d.severity == 'Low').length,
+      cracksCount: detections.where((d) => d.damageType.toLowerCase().contains('crack')).length,
+      corrosionCount: detections.where((d) => d.damageType.toLowerCase().contains('corrosion') || d.damageType.toLowerCase().contains('rust') || d.damageType.toLowerCase().contains('scaling')).length,
+      deformationCount: detections.where((d) => d.damageType.toLowerCase().contains('deformation') || d.damageType.toLowerCase().contains('deform')).length,
     );
     return DetectionReport.fromMap(reportMap, detections: detections, summary: summary);
   }

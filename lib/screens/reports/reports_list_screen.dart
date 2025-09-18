@@ -599,24 +599,24 @@ class _ReportsListScreenState extends State<ReportsListScreen> {
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
                   _buildStatChip(
-                    'Total Detections',
+                    'Total',
                     report.summary.totalDetections.toString(),
                     Colors.blue,
                   ),
                   _buildStatChip(
-                    'Critical',
-                    report.summary.criticalCount.toString(),
+                    'Cracks',
+                    report.summary.cracksCount.toString(),
                     Colors.red,
                   ),
                   _buildStatChip(
-                    'Moderate',
-                    report.summary.moderateCount.toString(),
+                    'Corrosion',
+                    report.summary.corrosionCount.toString(),
                     Colors.orange,
                   ),
                   _buildStatChip(
-                    'Minor',
-                    report.summary.minorCount.toString(),
-                    Colors.green,
+                    'Deformation',
+                    report.summary.deformationCount.toString(),
+                    Colors.purple,
                   ),
                 ],
               ),

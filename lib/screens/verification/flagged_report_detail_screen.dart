@@ -278,24 +278,22 @@ class FlaggedReportDetailScreen extends StatelessWidget {
                 Colors.blue,
               ),
               _buildSummaryItem(
-                'Critical',
-                report.summary.criticalCount.toString(),
+                'Cracks',
+                report.summary.cracksCount.toString(),
                 Colors.red,
               ),
               _buildSummaryItem(
-                'Moderate',
-                report.summary.moderateCount.toString(),
+                'Corrosion',
+                report.summary.corrosionCount.toString(),
                 Colors.orange,
               ),
               _buildSummaryItem(
-                'Minor',
-                report.summary.minorCount.toString(),
-                Colors.green,
+                'Deformation',
+                report.summary.deformationCount.toString(),
+                Colors.purple,
               ),
             ],
           ),
-          const SizedBox(height: 16),
-          _buildSeverityIndicator(),
         ],
       ),
     );
@@ -320,48 +318,6 @@ class FlaggedReportDetailScreen extends StatelessWidget {
           ),
         ),
       ],
-    );
-  }
-
-  Widget _buildSeverityIndicator() {
-    Color severityColor;
-    switch (report.summary.overallSeverity.toLowerCase()) {
-      case 'critical':
-        severityColor = Colors.red;
-        break;
-      case 'moderate':
-        severityColor = Colors.orange;
-        break;
-      default:
-        severityColor = Colors.green;
-    }
-
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: severityColor.withOpacity(0.1),
-        borderRadius: BorderRadius.circular(8),
-      ),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Icon(
-            Icons.warning_amber_rounded,
-            color: severityColor,
-            size: 20,
-          ),
-          const SizedBox(width: 8),
-          Text(
-            'Overall Severity: ${report.summary.overallSeverity}',
-            style: TextStyle(
-              fontSize: 16,
-              fontWeight: FontWeight.w600,
-              color: severityColor,
-            ),
-          ),
-        ],
-      ),
     );
   }
 
@@ -408,16 +364,23 @@ class FlaggedReportDetailScreen extends StatelessWidget {
   }
 
   Widget _buildDetectionItem(DamageDetection detection, int index) {
-    Color severityColor;
-    switch (detection.severity.toLowerCase()) {
-      case 'high':
-        severityColor = Colors.red;
+    Color damageTypeColor;
+    switch (detection.damageType.toLowerCase()) {
+      case 'crack':
+      case 'cracks':
+        damageTypeColor = Colors.red;
         break;
-      case 'medium':
-        severityColor = Colors.orange;
+      case 'corrosion':
+      case 'rust':
+      case 'scaling':
+        damageTypeColor = Colors.orange;
+        break;
+      case 'deformation':
+      case 'deform':
+        damageTypeColor = Colors.purple;
         break;
       default:
-        severityColor = Colors.green;
+        damageTypeColor = Colors.blue;
     }
 
     return Container(
@@ -435,22 +398,22 @@ class FlaggedReportDetailScreen extends StatelessWidget {
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                 decoration: BoxDecoration(
-                  color: severityColor.withOpacity(0.1),
+                  color: damageTypeColor.withOpacity(0.1),
                   borderRadius: BorderRadius.circular(12),
                 ),
                 child: Text(
-                  detection.severity,
+                  detection.damageType,
                   style: TextStyle(
                     fontSize: 12,
                     fontWeight: FontWeight.w600,
-                    color: severityColor,
+                    color: damageTypeColor,
                   ),
                 ),
               ),
               const SizedBox(width: 8),
               Expanded(
                 child: Text(
-                  detection.damageType,
+                  'Confidence: ${(detection.confidence * 100).toInt()}%',
                   style: const TextStyle(
                     fontSize: 16,
                     fontWeight: FontWeight.w600,
@@ -458,13 +421,10 @@ class FlaggedReportDetailScreen extends StatelessWidget {
                   ),
                 ),
               ),
-              Text(
-                '${(detection.confidence * 100).toInt()}%',
-                style: TextStyle(
-                  fontSize: 14,
-                  fontWeight: FontWeight.w500,
-                  color: Colors.grey[600],
-                ),
+              Icon(
+                _getDamageTypeIcon(detection.damageType),
+                color: damageTypeColor,
+                size: 20,
               ),
             ],
           ),
@@ -748,5 +708,22 @@ class FlaggedReportDetailScreen extends StatelessWidget {
 
   String _formatDate(DateTime date) {
     return '${date.day}/${date.month}/${date.year} ${date.hour}:${date.minute.toString().padLeft(2, '0')}';
+  }
+
+  IconData _getDamageTypeIcon(String damageType) {
+    switch (damageType.toLowerCase()) {
+      case 'crack':
+      case 'cracks':
+        return Icons.broken_image;
+      case 'corrosion':
+      case 'rust':
+      case 'scaling':
+        return Icons.warning;
+      case 'deformation':
+      case 'deform':
+        return Icons.architecture;
+      default:
+        return Icons.info;
+    }
   }
 }

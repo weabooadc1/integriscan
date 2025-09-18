@@ -19,7 +19,7 @@ class DatabaseHelper {
     final path = join(dbPath, 'app_database.db');
     return await openDatabase(
       path,
-      version: 6, // Incremented for engineer verification schema fix
+      version: 7, // Incremented for damage type schema migration
       onCreate: _onCreate,
       onUpgrade: _onUpgrade,
     );
@@ -93,6 +93,28 @@ class DatabaseHelper {
         print('Error fixing engineer verification table schema: $e');
       }
     }
+    if (oldVersion < 7) {
+      // Migrate to damage type categorization system
+      try {
+        // Add new columns for damage type counts to reports table
+        var result = await db.rawQuery("PRAGMA table_info(reports)");
+        bool cracksCountExists = result.any((column) => column['name'] == 'cracksCount');
+        
+        if (!cracksCountExists) {
+          await db.execute('ALTER TABLE reports ADD COLUMN cracksCount INTEGER NOT NULL DEFAULT 0');
+          await db.execute('ALTER TABLE reports ADD COLUMN corrosionCount INTEGER NOT NULL DEFAULT 0');
+          await db.execute('ALTER TABLE reports ADD COLUMN deformationCount INTEGER NOT NULL DEFAULT 0');
+          print('Added damage type count columns to reports table');
+          
+          // Migrate existing reports by calculating damage type counts from their detections
+          await _migrateDamageTypeCounts(db);
+        }
+        
+        print('Successfully migrated to damage type categorization system');
+      } catch (e) {
+        print('Error migrating to damage type system: $e');
+      }
+    }
   }
 
   Future _createTables(Database db) async {
@@ -119,6 +141,9 @@ class DatabaseHelper {
         detectionsCount INTEGER NOT NULL,
         severityLevel TEXT NOT NULL,
         recommendations TEXT NOT NULL,
+        cracksCount INTEGER NOT NULL DEFAULT 0,
+        corrosionCount INTEGER NOT NULL DEFAULT 0,
+        deformationCount INTEGER NOT NULL DEFAULT 0,
         synced INTEGER NOT NULL DEFAULT 0,
         flaggedForVerification INTEGER NOT NULL DEFAULT 0,
         flaggedAt TEXT,
@@ -159,6 +184,61 @@ class DatabaseHelper {
         FOREIGN KEY (originalReportId) REFERENCES reports (id)
       )
     ''');
+  }
+
+  /// Migrate existing reports to calculate damage type counts from their detections
+  Future _migrateDamageTypeCounts(Database db) async {
+    try {
+      print('Starting damage type counts migration...');
+      
+      // Get all reports
+      final reports = await db.query('reports');
+      
+      for (final report in reports) {
+        final reportId = report['id'] as String;
+        
+        // Get all detections for this report
+        final detections = await db.query('detections', where: 'reportId = ?', whereArgs: [reportId]);
+        
+        // Count damage types using the same logic as in report_service.dart
+        int cracksCount = 0;
+        int corrosionCount = 0;
+        int deformationCount = 0;
+        
+        for (final detection in detections) {
+          final damageType = (detection['damageType'] as String).toLowerCase();
+          
+          if (damageType.contains('crack')) {
+            cracksCount++;
+          } else if (damageType.contains('corrosion') || 
+                     damageType.contains('rust') || 
+                     damageType.contains('scaling')) {
+            corrosionCount++;
+          } else if (damageType.contains('deformation') || 
+                     damageType.contains('deform')) {
+            deformationCount++;
+          }
+        }
+        
+        // Update the report with calculated counts
+        await db.update(
+          'reports',
+          {
+            'cracksCount': cracksCount,
+            'corrosionCount': corrosionCount,
+            'deformationCount': deformationCount,
+          },
+          where: 'id = ?',
+          whereArgs: [reportId],
+        );
+        
+        print('Migrated report $reportId: $cracksCount cracks, $corrosionCount corrosion, $deformationCount deformation');
+      }
+      
+      print('Completed damage type counts migration for ${reports.length} reports');
+    } catch (e) {
+      print('Error during damage type counts migration: $e');
+    }
   }
 
   Future<int> insertUser(Map<String, dynamic> user) async {

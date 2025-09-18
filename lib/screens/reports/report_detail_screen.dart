@@ -5,7 +5,7 @@ import 'package:integriscan/services/firebase_storage_service.dart';
 import 'package:integriscan/component/primarybutton.dart';
 import 'dart:io';
 
-class ReportDetailScreen extends StatelessWidget {
+class ReportDetailScreen extends StatefulWidget {
   final DetectionReport report;
   final bool fromAnalysis; // New parameter to indicate if coming from analysis
 
@@ -16,31 +16,101 @@ class ReportDetailScreen extends StatelessWidget {
   });
 
   @override
+  State<ReportDetailScreen> createState() => _ReportDetailScreenState();
+}
+
+class _ReportDetailScreenState extends State<ReportDetailScreen> {
+  bool _isInitializing = true;
+  
+  @override
+  void initState() {
+    super.initState();
+    // If coming from analysis, add extra delay to ensure all resources are cleaned up
+    if (widget.fromAnalysis) {
+      print('🔍 ReportDetailScreen: Coming from analysis, adding initialization delay...');
+      Future.delayed(const Duration(milliseconds: 1500), () {
+        if (mounted) {
+          setState(() {
+            _isInitializing = false;
+          });
+          print('🔍 ReportDetailScreen: Initialization complete, showing content');
+        }
+      });
+    } else {
+      // Normal initialization for regular navigation
+      Future.delayed(const Duration(milliseconds: 300), () {
+        if (mounted) {
+          setState(() {
+            _isInitializing = false;
+          });
+        }
+      });
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: Colors.grey[50],
-      appBar: AppBar(
-        title: Text(report.sessionName),
-        backgroundColor: Colors.white,
-        foregroundColor: Colors.black87,
-        elevation: 0,
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.share),
-            onPressed: () => _shareReport(),
+    // Show loading screen if initializing from analysis
+    if (_isInitializing) {
+      return Scaffold(
+        backgroundColor: Colors.grey[50],
+        body: Center(
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              const CircularProgressIndicator(),
+              const SizedBox(height: 16),
+              Text(
+                widget.fromAnalysis 
+                  ? 'Preparing report...\nEnsuring system stability...'
+                  : 'Loading report...',
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  color: Colors.grey[600],
+                  fontSize: 16,
+                ),
+              ),
+            ],
           ),
-        ],
-      ),
-      body: SingleChildScrollView(
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            _buildReportHeader(),
-            _buildSummaryCard(),
-            _buildDetectionsList(),
-            _buildRecommendationsCard(),
-            _buildFinishButton(context),
+        ),
+      );
+    }
+    
+    return WillPopScope(
+      onWillPop: () async {
+        // Force garbage collection when leaving the screen
+        await Future.delayed(const Duration(milliseconds: 100));
+        return true;
+      },
+      child: Scaffold(
+        backgroundColor: Colors.grey[50],
+        appBar: AppBar(
+          title: Text(widget.report.sessionName),
+          backgroundColor: Colors.white,
+          foregroundColor: Colors.black87,
+          elevation: 0,
+          actions: [
+            IconButton(
+              icon: const Icon(Icons.share),
+              onPressed: () => _shareReport(),
+            ),
           ],
+        ),
+        body: SafeArea(
+          child: SingleChildScrollView(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                _buildReportHeader(),
+                _buildSummaryCard(),
+                _buildDetectionsList(),
+                _buildRecommendationsCard(),
+                _buildFinishButton(context),
+                // Add some padding at the bottom to prevent overflow
+                const SizedBox(height: 20),
+              ],
+            ),
+          ),
         ),
       ),
     );
@@ -71,7 +141,7 @@ class ReportDetailScreen extends StatelessWidget {
             ),
             const SizedBox(height: 8),
             Text(
-              'Generated: ${_formatDate(report.createdAt)}',
+              'Generated: ${_formatDate(widget.report.createdAt)}',
               style: const TextStyle(
                 fontSize: 16,
                 color: Colors.white70,
@@ -105,19 +175,13 @@ class ReportDetailScreen extends StatelessWidget {
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                _buildSummaryItem('Total Detections', report.summary.totalDetections.toString(), Colors.blue),
-                _buildSummaryItem('Critical', report.summary.criticalCount.toString(), Colors.red),
-                _buildSummaryItem('Moderate', report.summary.moderateCount.toString(), Colors.orange),
-                _buildSummaryItem('Minor', report.summary.minorCount.toString(), Colors.green),
+                _buildSummaryItem('Total Detections', widget.report.summary.totalDetections.toString(), Colors.blue),
+                _buildSummaryItem('Cracks', widget.report.summary.cracksCount.toString(), Colors.red),
+                _buildSummaryItem('Corrosion', widget.report.summary.corrosionCount.toString(), Colors.orange),
+                _buildSummaryItem('Deformation', widget.report.summary.deformationCount.toString(), Colors.purple),
               ],
             ),
             const SizedBox(height: 16),
-            Row(
-              children: [
-                const Text('Overall Severity: ', style: TextStyle(fontWeight: FontWeight.w600)),
-                _buildSeverityBadge(report.summary.overallSeverity),
-              ],
-            ),
           ],
         ),
       ),
@@ -165,7 +229,7 @@ class ReportDetailScreen extends StatelessWidget {
               ),
             ),
             const SizedBox(height: 16),
-            ...report.detections.map((detection) => _buildDetectionItem(detection)),
+            ...widget.report.detections.map((detection) => _buildDetectionItem(detection)),
           ],
         ),
       ),
@@ -253,6 +317,12 @@ class ReportDetailScreen extends StatelessWidget {
         height: 150,
         width: double.infinity,
         fit: BoxFit.cover,
+        // Add memory cache settings to prevent memory issues
+        cacheHeight: 300, // Limit cache height
+        cacheWidth: 600,  // Limit cache width
+        // Add memory allocation limits to prevent native crashes
+        isAntiAlias: false, // Disable anti-aliasing to reduce memory usage
+        filterQuality: FilterQuality.low, // Use low quality filtering to reduce memory
         loadingBuilder: (context, child, loadingProgress) {
           if (loadingProgress == null) return child;
           return Container(
@@ -271,6 +341,7 @@ class ReportDetailScreen extends StatelessWidget {
           );
         },
         errorBuilder: (context, error, stackTrace) {
+          print('Error loading network image: $error');
           return Container(
             height: 150,
             decoration: BoxDecoration(
@@ -291,31 +362,83 @@ class ReportDetailScreen extends StatelessWidget {
         },
       );
     } else {
-      return Image.file(
-        File(imagePath),
-        height: 150,
-        width: double.infinity,
-        fit: BoxFit.cover,
-        errorBuilder: (context, error, stackTrace) {
-          return Container(
-            height: 150,
-            decoration: BoxDecoration(
-              color: Colors.grey[200],
-              borderRadius: BorderRadius.circular(8),
+      // For local files, check if file exists first
+      final file = File(imagePath);
+      if (!file.existsSync()) {
+        return Container(
+          height: 150,
+          decoration: BoxDecoration(
+            color: Colors.grey[200],
+            borderRadius: BorderRadius.circular(8),
+          ),
+          child: const Center(
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(Icons.image_not_supported, color: Colors.grey, size: 48),
+                SizedBox(height: 8),
+                Text('Image file not found', style: TextStyle(color: Colors.grey)),
+              ],
             ),
-            child: const Center(
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Icon(Icons.image_not_supported, color: Colors.grey, size: 48),
-                  SizedBox(height: 8),
-                  Text('Image not available', style: TextStyle(color: Colors.grey)),
-                ],
+          ),
+        );
+      }
+
+      // Add try-catch around image loading to prevent native crashes
+      try {
+        return Image.file(
+          file,
+          height: 150,
+          width: double.infinity,
+          fit: BoxFit.cover,
+          // Add memory cache settings to prevent memory issues
+          cacheHeight: 300,
+          cacheWidth: 600,
+          // Add memory allocation limits to prevent native crashes
+          isAntiAlias: false, // Disable anti-aliasing to reduce memory usage
+          filterQuality: FilterQuality.low, // Use low quality filtering to reduce memory
+          errorBuilder: (context, error, stackTrace) {
+            print('Error loading local image: $error');
+            print('Stack trace: $stackTrace');
+            return Container(
+              height: 150,
+              decoration: BoxDecoration(
+                color: Colors.grey[200],
+                borderRadius: BorderRadius.circular(8),
               ),
+              child: const Center(
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(Icons.image_not_supported, color: Colors.grey, size: 48),
+                    SizedBox(height: 8),
+                    Text('Image not available', style: TextStyle(color: Colors.grey)),
+                  ],
+                ),
+              ),
+            );
+          },
+        );
+      } catch (e) {
+        print('Exception creating Image.file widget: $e');
+        return Container(
+          height: 150,
+          decoration: BoxDecoration(
+            color: Colors.grey[200],
+            borderRadius: BorderRadius.circular(8),
+          ),
+          child: const Center(
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(Icons.image_not_supported, color: Colors.grey, size: 48),
+                SizedBox(height: 8),
+                Text('Image loading failed', style: TextStyle(color: Colors.grey)),
+              ],
             ),
-          );
-        },
-      );
+          ),
+        );
+      }
     }
   }
 
@@ -377,7 +500,7 @@ class ReportDetailScreen extends StatelessWidget {
               ),
             ),
             const SizedBox(height: 16),
-            if (report.detections.isEmpty) ...[
+            if (widget.report.detections.isEmpty) ...[
               Container(
                 padding: const EdgeInsets.all(16),
                 decoration: BoxDecoration(
@@ -402,7 +525,7 @@ class ReportDetailScreen extends StatelessWidget {
                 ),
               ),
             ] else ...[
-              ...report.detections.map((detection) => _buildRecommendationSection(detection)),
+              ...widget.report.detections.map((detection) => _buildRecommendationSection(detection)),
             ],
           ],
         ),
@@ -562,7 +685,7 @@ class ReportDetailScreen extends StatelessWidget {
       width: double.infinity,
       child: Column(
         children: [
-          if (fromAnalysis) ...[
+          if (widget.fromAnalysis) ...[
             // Show when coming from RTSP analysis - go to home
             PrimaryButton(
               text: "Finish & Go to Home",

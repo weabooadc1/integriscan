@@ -39,6 +39,9 @@ class DetectionReport {
       'detectionsCount': detections.length,
       'severityLevel': summary.overallSeverity,
       'recommendations': summary.recommendations.join('|'),
+      'cracksCount': summary.cracksCount,
+      'corrosionCount': summary.corrosionCount,
+      'deformationCount': summary.deformationCount,
       'synced': synced ? 1 : 0,
       'flaggedForVerification': flaggedForVerification ? 1 : 0,
       'flaggedAt': flaggedAt?.toIso8601String(),
@@ -63,9 +66,9 @@ class DetectionReport {
         overallSeverity: map['severityLevel'],
         recommendations: map['recommendations'].split('|'),
         totalDetections: map['detectionsCount'],
-        criticalCount: 0,
-        moderateCount: 0,
-        minorCount: 0,
+        cracksCount: map['cracksCount'] ?? 0,
+        corrosionCount: map['corrosionCount'] ?? 0,
+        deformationCount: map['deformationCount'] ?? 0,
       ),
       synced: (map['synced'] ?? 0) == 1,
       flaggedForVerification: (map['flaggedForVerification'] ?? 0) == 1,
@@ -165,17 +168,17 @@ class ReportSummary {
   final String overallSeverity;
   final List<String> recommendations;
   final int totalDetections;
-  final int criticalCount;
-  final int moderateCount;
-  final int minorCount;
+  final int cracksCount;
+  final int corrosionCount;
+  final int deformationCount;
 
   ReportSummary({
     required this.overallSeverity,
     required this.recommendations,
     required this.totalDetections,
-    required this.criticalCount,
-    required this.moderateCount,
-    required this.minorCount,
+    required this.cracksCount,
+    required this.corrosionCount,
+    required this.deformationCount,
   });
 
   Map<String, dynamic> toMap() {
@@ -183,9 +186,9 @@ class ReportSummary {
       'overallSeverity': overallSeverity,
       'recommendations': recommendations.join('|'),
       'totalDetections': totalDetections,
-      'criticalCount': criticalCount,
-      'moderateCount': moderateCount,
-      'minorCount': minorCount,
+      'cracksCount': cracksCount,
+      'corrosionCount': corrosionCount,
+      'deformationCount': deformationCount,
     };
   }
 
@@ -194,9 +197,9 @@ class ReportSummary {
       overallSeverity: map['overallSeverity'] ?? '',
       recommendations: (map['recommendations'] ?? '').toString().split('|'),
       totalDetections: map['totalDetections'] ?? 0,
-      criticalCount: map['criticalCount'] ?? 0,
-      moderateCount: map['moderateCount'] ?? 0,
-      minorCount: map['minorCount'] ?? 0,
+      cracksCount: map['cracksCount'] ?? 0,
+      corrosionCount: map['corrosionCount'] ?? 0,
+      deformationCount: map['deformationCount'] ?? 0,
     );
   }
 }

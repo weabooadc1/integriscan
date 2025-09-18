@@ -130,6 +130,7 @@ class RecommendationsService {
         return 'crack';
       case 'rusting':
       case 'corrosion':
+      case 'scaling':
         return 'rust';
       case 'deform':
       case 'deformations':
@@ -137,7 +138,7 @@ class RecommendationsService {
       case 'scale':
       case 'scales':
       case 'peeling':
-        return 'scaling';
+        return 'rust';
       default:
         return normalized;
     }
