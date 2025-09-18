@@ -5,7 +5,6 @@ import 'package:integriscan/screens/profile/profile_screen.dart';
 import 'package:integriscan/screens/rtsp/rtsp_stream_screen.dart';
 import 'package:integriscan/screens/reports/reports_list_screen.dart';
 import 'package:integriscan/screens/verification/my_flagged_reports_screen.dart';
-import 'package:integriscan/screens/debug/connectivity_debug_screen.dart';
 import 'package:provider/provider.dart';
 
 class HomeScreen extends StatelessWidget {
@@ -169,7 +168,7 @@ class HomeScreen extends StatelessWidget {
                     
                     // Quick Actions Title
                     const Text(
-                      'Quick Actions',
+                      'Functions',
                       style: TextStyle(
                         fontSize: 22,
                         fontWeight: FontWeight.w600,
@@ -273,22 +272,7 @@ class HomeScreen extends StatelessWidget {
                                   ),
                                 ),
                                 const SizedBox(width: 16),
-                                Expanded(
-                                  child: _buildModernActionCard(
-                                    context,
-                                    title: 'Debug Connectivity',
-                                    icon: Icons.bug_report,
-                                    color: Colors.grey,
-                                    onTap: () {
-                                      Navigator.push(
-                                        context,
-                                        MaterialPageRoute(
-                                          builder: (context) => const ConnectivityDebugScreen(),
-                                        ),
-                                      );
-                                    },
-                                  ),
-                                ),
+                                Expanded(child: Container()), // Empty space to maintain layout
                               ],
                             ),
                           ],

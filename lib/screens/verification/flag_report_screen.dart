@@ -229,14 +229,6 @@ class _FlagReportScreenState extends State<FlagReportScreen> {
                       ),
                       Expanded(
                         child: _buildStatItem(
-                          'Severity',
-                          widget.report.summary.overallSeverity,
-                          Icons.priority_high,
-                          _getSeverityColor(widget.report.summary.overallSeverity),
-                        ),
-                      ),
-                      Expanded(
-                        child: _buildStatItem(
                           'Status',
                           widget.report.verificationStatus.toUpperCase(),
                           Icons.verified,
@@ -523,19 +515,6 @@ class _FlagReportScreenState extends State<FlagReportScreen> {
         ),
       ],
     );
-  }
-
-  Color _getSeverityColor(String severity) {
-    switch (severity.toLowerCase()) {
-      case 'critical':
-        return Colors.red;
-      case 'moderate':
-        return Colors.orange;
-      case 'minor':
-        return Colors.green;
-      default:
-        return Colors.grey;
-    }
   }
 
   Color _getStatusColor(String status) {

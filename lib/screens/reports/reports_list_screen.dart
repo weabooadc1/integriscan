@@ -491,7 +491,6 @@ class _ReportsListScreenState extends State<ReportsListScreen> {
                       ],
                     ),
                   const SizedBox(width: 8),
-                  _buildSeverityBadge(report.summary.overallSeverity),
                 ],
               ),
               
@@ -622,36 +621,6 @@ class _ReportsListScreenState extends State<ReportsListScreen> {
               ),
             ],
           ),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildSeverityBadge(String severity) {
-    Color color;
-    switch (severity.toLowerCase()) {
-      case 'critical':
-        color = Colors.red;
-        break;
-      case 'moderate':
-        color = Colors.orange;
-        break;
-      default:
-        color = Colors.green;
-    }
-
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-      decoration: BoxDecoration(
-        color: color.withOpacity(0.1),
-        borderRadius: BorderRadius.circular(12),
-      ),
-      child: Text(
-        severity,
-        style: TextStyle(
-          color: color,
-          fontWeight: FontWeight.w600,
-          fontSize: 12,
         ),
       ),
     );

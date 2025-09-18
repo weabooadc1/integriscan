@@ -258,7 +258,6 @@ class _ReportDetailScreenState extends State<ReportDetailScreen> {
                   ),
                 ),
               ),
-              _buildSeverityBadge(detection.severity),
             ],
           ),
           const SizedBox(height: 8),
@@ -636,36 +635,6 @@ class _ReportDetailScreenState extends State<ReportDetailScreen> {
           Text('$label: ', style: const TextStyle(fontWeight: FontWeight.w600)),
           Text(value, style: TextStyle(color: color)),
         ],
-      ),
-    );
-  }
-
-  Widget _buildSeverityBadge(String severity) {
-    Color color;
-    switch (severity.toLowerCase()) {
-      case 'high':
-        color = Colors.red;
-        break;
-      case 'medium':
-        color = Colors.orange;
-        break;
-      default:
-        color = Colors.green;
-    }
-
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-      decoration: BoxDecoration(
-        color: color.withOpacity(0.1),
-        borderRadius: BorderRadius.circular(12),
-      ),
-      child: Text(
-        severity,
-        style: TextStyle(
-          color: color,
-          fontWeight: FontWeight.w600,
-          fontSize: 12,
-        ),
       ),
     );
   }
