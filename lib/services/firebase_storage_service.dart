@@ -160,7 +160,7 @@ class FirebaseStorageService {
     return imageUrls;
   }
 
-  /// Download multiple images for a report
+  /// Download multiple images for a report with improved caching
   static Future<Map<String, String>> downloadReportImages(List<Map<String, dynamic>> detections, String reportId) async {
     final Map<String, String> localPaths = {};
     
@@ -170,18 +170,59 @@ class FirebaseStorageService {
       
       // Check if imagePath is a download URL (starts with http)
       if (imagePath.startsWith('http') && detectionId.isNotEmpty) {
+        // First check if we already have this image locally to avoid unnecessary downloads
+        final cachedPath = await _getCachedImagePath(reportId, detectionId);
+        if (cachedPath != null && File(cachedPath).existsSync()) {
+          print('Using existing cached image for detection $detectionId');
+          localPaths[detectionId] = cachedPath;
+          continue;
+        }
+        
+        // Only download if not cached
         final localPath = await downloadImage(imagePath, reportId, detectionId);
         if (localPath != null) {
           localPaths[detectionId] = localPath;
         }
       } else if (imagePath.isNotEmpty) {
-        // It's already a local path
-        localPaths[detectionId] = imagePath;
+        // It's already a local path - check if it still exists
+        if (File(imagePath).existsSync()) {
+          localPaths[detectionId] = imagePath;
+        } else {
+          print('Local image file not found: $imagePath');
+        }
       }
     }
     
-    print('Downloaded ${localPaths.length} images for report $reportId');
+    print('Processed ${localPaths.length} images for report $reportId (avoided unnecessary downloads)');
     return localPaths;
+  }
+
+  /// Helper method to check for cached images
+  static Future<String?> _getCachedImagePath(String reportId, String detectionId) async {
+    try {
+      final directory = await getApplicationDocumentsDirectory();
+      final framesDir = Directory('${directory.path}/frames');
+      
+      if (!await framesDir.exists()) {
+        return null;
+      }
+      
+      // Look for existing cached files for this detection
+      final files = framesDir.listSync().where((file) => 
+        file.path.contains('downloaded_${reportId}_${detectionId}_'));
+      
+      if (files.isNotEmpty) {
+        final file = File(files.first.path);
+        if (await file.exists()) {
+          return file.path;
+        }
+      }
+      
+      return null;
+    } catch (e) {
+      print('Error checking cached image: $e');
+      return null;
+    }
   }
 
   /// Check if a path is a Firebase Storage URL
@@ -190,14 +231,11 @@ class FirebaseStorageService {
   }
 
   /// Get a local file path if the image exists locally, otherwise return the download URL
+  /// This method ensures images are accessible across devices by prioritizing cloud URLs
   static Future<String> getDisplayPath(String originalPath, String reportId, String detectionId) async {
-    // If it's already a local path and file exists, return it
-    if (!isFirebaseUrl(originalPath) && File(originalPath).existsSync()) {
-      return originalPath;
-    }
-    
-    // If it's a Firebase URL, try to get local cached version
+    // If it's already a Firebase URL, always use it for cross-device compatibility
     if (isFirebaseUrl(originalPath)) {
+      // Try to get cached local version first for better performance
       final directory = await getApplicationDocumentsDirectory();
       final framesDir = Directory('${directory.path}/frames');
       
@@ -205,16 +243,37 @@ class FirebaseStorageService {
         final files = framesDir.listSync().where((file) => 
           file.path.contains('downloaded_${reportId}_${detectionId}_'));
         
-        if (files.isNotEmpty) {
+        if (files.isNotEmpty && File(files.first.path).existsSync()) {
+          print('Using cached local version of cloud image');
           return files.first.path;
         }
       }
       
-      // Download the image if not cached
-      final localPath = await downloadImage(originalPath, reportId, detectionId);
-      return localPath ?? originalPath;
+      // If no local cache, download the image for better performance on future loads
+      try {
+        final localPath = await downloadImage(originalPath, reportId, detectionId);
+        if (localPath != null && File(localPath).existsSync()) {
+          print('Downloaded cloud image for local caching');
+          return localPath;
+        }
+      } catch (e) {
+        print('Failed to download cloud image for caching: $e');
+      }
+      
+      // Fall back to the original cloud URL if download fails
+      print('Using cloud URL directly');
+      return originalPath;
     }
     
+    // If it's a local path and file exists, return it
+    if (!isFirebaseUrl(originalPath) && File(originalPath).existsSync()) {
+      print('Using existing local file');
+      return originalPath;
+    }
+    
+    // If local file doesn't exist, it might be available in cloud
+    // This handles cases where the image was created on another device
+    print('Local file not found, returning original path: $originalPath');
     return originalPath;
   }
 }

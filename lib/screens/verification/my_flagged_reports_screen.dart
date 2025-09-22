@@ -540,7 +540,7 @@ class _MyFlaggedReportsScreenState extends State<MyFlaggedReportsScreen> with Si
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
                   Text(
-                    '${report.summary.totalDetections} detections • ${report.summary.overallSeverity}',
+                    '${report.summary.totalDetections} detections',
                     style: TextStyle(
                       fontSize: 12,
                       color: Colors.grey[600],

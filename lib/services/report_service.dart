@@ -33,6 +33,8 @@ class ReportService {
   /// Static wrapper for background sync
   static Future<void> syncAllUnsyncedReportsStatic({String? userId}) async {
     await ReportService().syncAllUnsyncedReports(userId: userId);
+    // Also sync pending flag operations
+    await ReportService().syncPendingFlagOperations(userId: userId);
   }
 
   /// Static wrapper for single report sync
@@ -371,6 +373,159 @@ class ReportService {
     }
   }
 
+  // Static flag to prevent concurrent execution of flag operations sync
+  static bool _isSyncingFlagOperations = false;
+
+  /// Sync pending flag operations when connectivity is restored
+  Future<void> syncPendingFlagOperations({String? userId}) async {
+    // Prevent concurrent execution
+    if (_isSyncingFlagOperations) {
+      print('Flag operations sync already in progress, skipping...');
+      return;
+    }
+
+    try {
+      _isSyncingFlagOperations = true;
+      print('Starting sync of pending flag operations...');
+      
+      // Check connectivity first
+      final connectivityService = ConnectivityService();
+      if (!connectivityService.isConnected) {
+        print('No connectivity - skipping pending flag operations sync');
+        return;
+      }
+      
+      // Test Firebase connection
+      final connectionOk = await FirestoreSyncService.testConnection();
+      if (!connectionOk) {
+        print('Firebase connection test failed - skipping pending flag operations sync');
+        return;
+      }
+      
+      final db = DatabaseHelper();
+      final pendingOperations = await db.getPendingFlagOperations();
+      
+      if (pendingOperations.isEmpty) {
+        print('No pending flag operations to sync');
+        return;
+      }
+      
+      print('Found ${pendingOperations.length} pending flag operations to sync');
+      
+      for (final operation in pendingOperations) {
+        try {
+          final operationId = operation['id'] as int;
+          final reportId = operation['reportId'] as String;
+          final operationType = operation['operation'] as String;
+          final operationUserId = operation['userId'] as String;
+          
+          print('Processing pending operation: $operationType for report $reportId (operation ID: $operationId)');
+          
+          if (operationType == 'flag') {
+            // Remove the operation from queue immediately to prevent duplicate processing
+            await db.removePendingFlagOperation(operationId);
+            print('Removed operation $operationId from queue to prevent duplicates');
+            
+            // Parse operation data
+            final operationDataStr = operation['operationData'] as String;
+            final operationData = _parseOperationData(operationDataStr);
+            
+            // Get the report to flag
+            final report = await getReport(reportId);
+            if (report != null) {
+              // Try to sync the flagged report to cloud
+              try {
+                await FirestoreSyncService.uploadFlaggedReport(
+                  report, 
+                  operationUserId, 
+                  operationData['comments']
+                );
+                
+                // Clear pending sync status
+                await db.updateReportOfflineFlagStatus(reportId, 
+                  pendingFlagSync: false, 
+                  offlineFlaggedAt: null
+                );
+                
+                print('Successfully synced pending flag operation for report $reportId');
+                
+              } catch (syncError) {
+                print('Failed to sync flag operation for report $reportId: $syncError');
+                
+                // Re-add the operation to queue with incremented retry count
+                final retryCount = operation['retryCount'] as int;
+                if (retryCount >= 3) {
+                  print('Max retries reached for operation $operationId, not re-adding to queue');
+                  // Also clear the pending flag status since we're giving up
+                  await db.updateReportOfflineFlagStatus(reportId, 
+                    pendingFlagSync: false, 
+                    offlineFlaggedAt: null
+                  );
+                } else {
+                  // Re-add operation with incremented retry count
+                  await db.addPendingFlagOperation(
+                    reportId,
+                    operationType,
+                    operationDataStr,
+                    operationUserId
+                  );
+                  // Update retry count
+                  final newOperations = await db.getPendingFlagOperations();
+                  final newOperation = newOperations.where((op) => 
+                    op['reportId'] == reportId && 
+                    op['operation'] == operationType
+                  ).firstOrNull;
+                  if (newOperation != null) {
+                    await db.incrementRetryCount(newOperation['id'] as int);
+                  }
+                  print('Re-added operation to queue with retry count ${retryCount + 1}');
+                }
+              }
+            } else {
+              print('Report $reportId not found, operation already removed from queue');
+            }
+          }
+          
+        } catch (e) {
+          print('Error processing pending operation: $e');
+          continue;
+        }
+      }
+      
+      print('Pending flag operations sync completed');
+      
+    } catch (e) {
+      print('Error during pending flag operations sync: $e');
+    } finally {
+      _isSyncingFlagOperations = false;
+    }
+  }
+  
+  /// Parse operation data string back to map
+  Map<String, dynamic> _parseOperationData(String operationDataStr) {
+    try {
+      // Simple string parsing since we stored it as toString()
+      // This is a basic implementation - you might want to use JSON encoding in production
+      final map = <String, dynamic>{};
+      
+      // Remove curly braces and split by comma
+      final cleanStr = operationDataStr.replaceAll('{', '').replaceAll('}', '');
+      final pairs = cleanStr.split(', ');
+      
+      for (final pair in pairs) {
+        final keyValue = pair.split(': ');
+        if (keyValue.length == 2) {
+          map[keyValue[0]] = keyValue[1];
+        }
+      }
+      
+      return map;
+    } catch (e) {
+      print('Error parsing operation data: $e');
+      return {};
+    }
+  }
+
   static Future<DetectionReport> generateReport({
     required String userId,
     required String sessionName,
@@ -450,8 +605,27 @@ class ReportService {
     // Try to sync to Firestore if requested and connection is available
     if (trySyncToCloud) {
       print('Attempting cloud sync...');
-      // Use an instance to call non-static method
-      await ReportService().trySyncReportToCloud(report);
+      try {
+        // Use an instance to call non-static method
+        await ReportService().trySyncReportToCloud(report);
+        
+        // Update the report as synced in the returned object
+        final updatedReport = DetectionReport(
+          id: report.id,
+          userId: report.userId,
+          sessionName: report.sessionName,
+          createdAt: report.createdAt,
+          detections: report.detections,
+          summary: report.summary,
+          synced: true, // Mark as synced since upload was successful
+        );
+        
+        print('Report successfully synced to cloud and marked as synced');
+        return updatedReport;
+      } catch (e) {
+        print('Cloud sync failed: $e');
+        // Return original report (unsynced) if cloud sync fails
+      }
     } else {
       print('Cloud sync skipped (offline mode)');
     }
@@ -520,14 +694,28 @@ class ReportService {
     final db = DatabaseHelper();
     var reportMaps = await db.getReports(userId: userId);
     
-    // If local database is empty and user is provided, try to sync from cloud
-    if (reportMaps.isEmpty && userId != null) {
-      print('Local reports empty for user $userId, attempting to sync from cloud...');
-      await syncReportsFromCloud(userId: userId);
-      
-      // Retry getting reports after sync
-      reportMaps = await db.getReports(userId: userId);
-      print('After cloud sync, found ${reportMaps.length} reports locally');
+    // Only sync from cloud if we have connectivity and user ID
+    if (userId != null) {
+      print('Checking for cloud updates for user $userId...');
+      try {
+        // Check if we need to sync (e.g., if local DB is empty or last sync was long ago)
+        final shouldSync = await _shouldSyncFromCloud(userId);
+        
+        if (shouldSync) {
+          await syncReportsFromCloud(userId: userId);
+          
+          // Update last sync time
+          await db.updateLastSyncTime(userId);
+          
+          // Retry getting reports after sync to include any new reports from other devices
+          reportMaps = await db.getReports(userId: userId);
+          print('After cloud sync, found ${reportMaps.length} reports locally');
+        } else {
+          print('Skipping cloud sync - local data is up to date');
+        }
+      } catch (e) {
+        print('Cloud sync failed, using local reports: $e');
+      }
     }
     
     List<DetectionReport> reports = [];
@@ -546,6 +734,26 @@ class ReportService {
       reports.add(DetectionReport.fromMap(reportMap, detections: detections, summary: summary));
     }
     return reports;
+  }
+
+  /// Helper method to determine if cloud sync is needed
+  static Future<bool> _shouldSyncFromCloud(String userId) async {
+    try {
+      final db = DatabaseHelper();
+      final lastSyncTime = await db.getLastSyncTime(userId);
+      
+      if (lastSyncTime == null) {
+        return true; // Never synced
+      }
+      
+      final timeSinceLastSync = DateTime.now().difference(lastSyncTime);
+      
+      // Sync if more than 5 minutes since last sync
+      return timeSinceLastSync.inMinutes > 5;
+    } catch (e) {
+      print('Error checking sync status: $e');
+      return true; // Default to sync on error
+    }
   }
 
   static Future<DetectionReport?> getReport(String id) async {
@@ -645,45 +853,91 @@ class ReportService {
   /// Engineer Verification Methods
   
   /// Flag a report for engineer verification
-  Future<void> flagReportForVerification(String reportId, String userId, {String? comments}) async {
+  Future<void> flagReportForVerification(String reportId, String userId, {String? comments, bool isOfflineMode = false}) async {
     try {
       final db = DatabaseHelper();
       final now = DateTime.now().toIso8601String();
       
-      // Update the report with verification flag
-      await db.updateReportVerificationStatus(reportId, {
-        'flaggedForVerification': 1,
-        'flaggedAt': now,
-        'verificationStatus': 'review',
-        'engineerComments': comments,
-      });
-      
-      // Create engineer verification record (for local tracking)
-      final report = await getReport(reportId);
-      if (report != null) {
-        final verification = EngineerVerification(
-          id: DateTime.now().millisecondsSinceEpoch.toString(),
-          originalReportId: reportId,
-          userId: userId,
-          flaggedAt: DateTime.now(),
-          reportSnapshot: report.toMap(),
-          status: 'review',
-          engineerComments: comments,
+      if (isOfflineMode) {
+        // Offline mode: Flag locally and queue for later sync
+        print('Flagging report $reportId in offline mode');
+        
+        // Update the report with verification flag and offline pending sync status
+        await db.updateReportVerificationStatus(reportId, {
+          'flaggedForVerification': 1,
+          'flaggedAt': now,
+          'verificationStatus': 'review',
+          'engineerComments': comments,
+        });
+        
+        // Mark as pending sync
+        await db.updateReportOfflineFlagStatus(reportId, 
+          pendingFlagSync: true, 
+          offlineFlaggedAt: now
         );
         
-        await db.insertEngineerVerification(verification.toMap());
+        // Add to pending operations queue
+        final operationData = {
+          'reportId': reportId,
+          'userId': userId,
+          'comments': comments,
+          'flaggedAt': now,
+        };
         
-        // Send to dedicated flagged_reports Firestore collection
-        try {
-          await FirestoreSyncService.uploadFlaggedReport(report, userId, comments);
-          print('Report successfully sent to flagged_reports collection in Firestore');
-        } catch (e) {
-          print('Failed to sync flagged report to Firestore: $e');
-          // Still continue with local storage even if Firestore sync fails
+        await db.addPendingFlagOperation(
+          reportId, 
+          'flag', 
+          operationData.toString(), 
+          userId
+        );
+        
+        print('Report $reportId flagged offline and queued for sync');
+        
+      } else {
+        // Online mode: Flag and sync immediately
+        print('Flagging report $reportId in online mode');
+        
+        // Update the report with verification flag
+        await db.updateReportVerificationStatus(reportId, {
+          'flaggedForVerification': 1,
+          'flaggedAt': now,
+          'verificationStatus': 'review',
+          'engineerComments': comments,
+        });
+        
+        // Create engineer verification record (for local tracking)
+        final report = await getReport(reportId);
+        if (report != null) {
+          final verification = EngineerVerification(
+            id: DateTime.now().millisecondsSinceEpoch.toString(),
+            originalReportId: reportId,
+            userId: userId,
+            flaggedAt: DateTime.now(),
+            reportSnapshot: report.toMap(),
+            status: 'review',
+            engineerComments: comments,
+          );
+          
+          await db.insertEngineerVerification(verification.toMap());
+          
+          // Send to dedicated flagged_reports Firestore collection
+          try {
+            await FirestoreSyncService.uploadFlaggedReport(report, userId, comments);
+            print('Report successfully sent to flagged_reports collection in Firestore');
+          } catch (e) {
+            print('Failed to sync flagged report to Firestore: $e');
+            // If sync fails in online mode, convert to offline pending
+            await db.updateReportOfflineFlagStatus(reportId, 
+              pendingFlagSync: true, 
+              offlineFlaggedAt: now
+            );
+            throw Exception('Failed to sync flagged report to cloud: $e');
+          }
         }
+        
+        print('Report $reportId flagged for engineer verification and sent to Firestore flagged_reports collection');
       }
       
-      print('Report $reportId flagged for engineer verification and sent to Firestore flagged_reports collection');
     } catch (e) {
       print('Error flagging report for verification: $e');
       throw Exception('Failed to flag report for verification: $e');

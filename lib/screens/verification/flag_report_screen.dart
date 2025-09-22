@@ -3,6 +3,8 @@ import 'package:integriscan/constant.dart';
 import 'package:integriscan/models/report_models.dart';
 import 'package:integriscan/services/report_service.dart';
 import 'package:integriscan/providers/auth_provider.dart';
+import 'package:integriscan/services/connectivity_service.dart';
+import 'package:integriscan/widgets/connectivity_indicator.dart';
 import 'package:provider/provider.dart';
 
 class FlagReportScreen extends StatefulWidget {
@@ -20,6 +22,7 @@ class FlagReportScreen extends StatefulWidget {
 class _FlagReportScreenState extends State<FlagReportScreen> {
   final TextEditingController _commentController = TextEditingController();
   final ReportService _reportService = ReportService();
+  final ConnectivityService _connectivityService = ConnectivityService();
   bool _isLoading = false;
 
   @override
@@ -47,16 +50,24 @@ class _FlagReportScreenState extends State<FlagReportScreen> {
       final authProvider = Provider.of<AuthProvider>(context, listen: false);
       final userId = authProvider.user?.uid ?? 'unknown';
       
+      // Check connectivity to determine if we can flag online or need to queue for offline
+      final isConnected = _connectivityService.isConnected;
+      
       await _reportService.flagReportForVerification(
         widget.report.id,
         userId,
         comments: _commentController.text.trim(),
+        isOfflineMode: !isConnected,
       );
       
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Report flagged for engineer verification'),
-          backgroundColor: Colors.green,
+        SnackBar(
+          content: Text(
+            isConnected 
+                ? 'Report flagged for engineer verification'
+                : 'Report flagged offline - will sync when connection is restored'
+          ),
+          backgroundColor: isConnected ? Colors.green : Colors.orange,
         ),
       );
       
@@ -124,13 +135,21 @@ class _FlagReportScreenState extends State<FlagReportScreen> {
         backgroundColor: kPrimaryColor,
         iconTheme: const IconThemeData(color: Colors.white),
         elevation: 0,
+        actions: [
+          const Padding(
+            padding: EdgeInsets.only(right: 8.0),
+            child: Center(child: ConnectivityStatusChip()),
+          ),
+        ],
       ),
-      body: SingleChildScrollView(
-        padding: const EdgeInsets.all(20),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            // Report Summary Card
+      body: ConnectivityIndicator(
+        showOnlineIndicator: false,
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.all(20),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              // Report Summary Card
             Container(
               width: double.infinity,
               padding: const EdgeInsets.all(20),
@@ -209,6 +228,35 @@ class _FlagReportScreenState extends State<FlagReportScreen> {
                                   fontSize: 12,
                                   fontWeight: FontWeight.w600,
                                   color: Colors.orange[700],
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      if (widget.report.pendingFlagSync)
+                        Container(
+                          margin: const EdgeInsets.only(left: 8),
+                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                          decoration: BoxDecoration(
+                            color: Colors.blue.withOpacity(0.1),
+                            borderRadius: BorderRadius.circular(16),
+                            border: Border.all(color: Colors.blue.withOpacity(0.3)),
+                          ),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(
+                                Icons.sync_disabled,
+                                size: 14,
+                                color: Colors.blue[700],
+                              ),
+                              const SizedBox(width: 4),
+                              Text(
+                                'SYNC PENDING',
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w600,
+                                  color: Colors.blue[700],
                                 ),
                               ),
                             ],
@@ -478,6 +526,7 @@ class _FlagReportScreenState extends State<FlagReportScreen> {
           ],
         ),
       ),
+    ),
     );
   }
 

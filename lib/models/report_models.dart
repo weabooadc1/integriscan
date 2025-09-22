@@ -14,6 +14,10 @@ class DetectionReport {
   final String verificationStatus; // "none", "review", "clear", "issues"
   final String? engineerComments;
   final DateTime? reviewedAt;
+  
+  // Offline flagging support
+  final bool pendingFlagSync;
+  final DateTime? offlineFlaggedAt;
 
   DetectionReport({
     required this.id,
@@ -28,6 +32,8 @@ class DetectionReport {
     this.verificationStatus = 'none',
     this.engineerComments,
     this.reviewedAt,
+    this.pendingFlagSync = false,
+    this.offlineFlaggedAt,
   });
 
   Map<String, dynamic> toMap() {
@@ -48,6 +54,8 @@ class DetectionReport {
       'verificationStatus': verificationStatus,
       'engineerComments': engineerComments,
       'reviewedAt': reviewedAt?.toIso8601String(),
+      'pendingFlagSync': pendingFlagSync ? 1 : 0,
+      'offlineFlaggedAt': offlineFlaggedAt?.toIso8601String(),
     };
   }
 
@@ -76,6 +84,8 @@ class DetectionReport {
       verificationStatus: map['verificationStatus'] ?? 'none',
       engineerComments: map['engineerComments'],
       reviewedAt: map['reviewedAt'] != null ? DateTime.parse(map['reviewedAt']) : null,
+      pendingFlagSync: (map['pendingFlagSync'] ?? 0) == 1,
+      offlineFlaggedAt: map['offlineFlaggedAt'] != null ? DateTime.parse(map['offlineFlaggedAt']) : null,
     );
   }
 }

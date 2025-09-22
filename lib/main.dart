@@ -29,6 +29,7 @@ Future<void> main() async {
   // Set up background sync when connectivity is restored
   connectivityService.setConnectivityRestoredCallback(() async {
     try {
+      // Try to get current user and sync both ways for cross-device compatibility
       await ReportService.syncAllUnsyncedReportsStatic();
       Logger.info('Background sync completed after connectivity restoration');
     } catch (e) {

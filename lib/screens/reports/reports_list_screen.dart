@@ -14,7 +14,7 @@ class ReportsListScreen extends StatefulWidget {
   State<ReportsListScreen> createState() => _ReportsListScreenState();
 }
 
-class _ReportsListScreenState extends State<ReportsListScreen> {
+class _ReportsListScreenState extends State<ReportsListScreen> with WidgetsBindingObserver {
   List<DetectionReport> _reports = [];
   bool _loading = true;
   bool _selectionMode = false;
@@ -24,7 +24,23 @@ class _ReportsListScreenState extends State<ReportsListScreen> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _loadReports();
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    super.didChangeAppLifecycleState(state);
+    // Refresh the list when the app resumes to show any changes
+    if (state == AppLifecycleState.resumed) {
+      _loadReports();
+    }
   }
 
   Future<void> _loadReports() async {
@@ -32,16 +48,22 @@ class _ReportsListScreenState extends State<ReportsListScreen> {
       final authProvider = Provider.of<AuthProvider>(context, listen: false);
       final userId = authProvider.user?.uid ?? 'anonymous';
       final reports = await ReportService.getReports(userId: userId);
-      setState(() {
-        _reports = reports;
-        _loading = false;
-      });
+      
+      if (mounted) {
+        setState(() {
+          _reports = reports;
+          _loading = false;
+        });
+      }
     } catch (e) {
       print('Error loading reports: $e');
-      setState(() {
-        _reports = [];
-        _loading = false;
-      });
+      
+      if (mounted) {
+        setState(() {
+          _reports = [];
+          _loading = false;
+        });
+      }
     }
   }
 
@@ -68,8 +90,11 @@ class _ReportsListScreenState extends State<ReportsListScreen> {
         return;
       }
 
-      // Sync reports from cloud to local database
+      // Sync reports from cloud to local database (download new reports from other devices)
       await ReportService.syncReportsFromCloud(userId: userId);
+      
+      // Sync unsynced local reports to cloud (upload any local-only reports)
+      await ReportService.syncAllUnsyncedReportsStatic(userId: userId);
       
       // Reload reports to show the updated data
       await _loadReports();
@@ -150,20 +175,38 @@ class _ReportsListScreenState extends State<ReportsListScreen> {
 
     if (confirmed == true) {
       try {
-        await ReportService.deleteReports(_selectedReportIds.toList());
+        // Store the IDs to delete for rollback if needed
+        final idsToDelete = _selectedReportIds.toList();
+        
+        // Immediately remove the reports from local state for instant UI feedback
+        setState(() {
+          _reports.removeWhere((r) => _selectedReportIds.contains(r.id));
+          _selectedReportIds.clear();
+          _selectionMode = false;
+        });
+        
+        // Then delete from database (this will handle local and cloud deletion)
+        await ReportService.deleteReports(idsToDelete);
         
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
-              content: Text('${_selectedReportIds.length} report${_selectedReportIds.length > 1 ? 's' : ''} deleted successfully'),
+              content: Text('${idsToDelete.length} report${idsToDelete.length > 1 ? 's' : ''} deleted successfully'),
               backgroundColor: Colors.green,
             ),
           );
         }
         
-        _toggleSelectionMode(); // Exit selection mode
-        await _loadReports(); // Refresh the list
+        // Refresh the list to ensure consistency (in case of any sync issues)
+        await _loadReports();
       } catch (e) {
+        // If deletion failed, reload reports to restore the UI and exit selection mode
+        await _loadReports();
+        setState(() {
+          _selectedReportIds.clear();
+          _selectionMode = false;
+        });
+        
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
@@ -202,6 +245,12 @@ class _ReportsListScreenState extends State<ReportsListScreen> {
 
     if (confirmed == true) {
       try {
+        // Immediately remove the report from local state for instant UI feedback
+        setState(() {
+          _reports.removeWhere((r) => r.id == report.id);
+        });
+        
+        // Then delete from database (this will handle local and cloud deletion)
         await ReportService.deleteReport(report.id);
         
         if (mounted) {
@@ -213,8 +262,12 @@ class _ReportsListScreenState extends State<ReportsListScreen> {
           );
         }
         
-        await _loadReports(); // Refresh the list
+        // Refresh the list to ensure consistency (in case of any sync issues)
+        await _loadReports();
       } catch (e) {
+        // If deletion failed, reload reports to restore the UI
+        await _loadReports();
+        
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
@@ -411,16 +464,21 @@ class _ReportsListScreenState extends State<ReportsListScreen> {
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
       color: _selectionMode && isSelected ? Colors.blue.withOpacity(0.1) : null,
       child: InkWell(
-        onTap: () {
+        onTap: () async {
           if (_selectionMode) {
             _toggleReportSelection(report.id);
           } else {
-            Navigator.push(
+            // Navigate to detail screen and refresh list when returning
+            await Navigator.push(
               context,
               MaterialPageRoute(
                 builder: (context) => ReportDetailScreen(report: report),
               ),
             );
+            
+            // Always refresh the list when returning from detail screen
+            // in case the report was modified or deleted
+            await _loadReports();
           }
         },
         onLongPress: _selectionMode ? null : () {
@@ -537,6 +595,72 @@ class _ReportsListScreenState extends State<ReportsListScreen> {
                     ),
                 ],
               ),
+              
+              // Pending sync indicators row
+              if (report.pendingFlagSync || (!report.synced)) ...[
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    if (!report.synced)
+                      Container(
+                        margin: const EdgeInsets.only(right: 8),
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                        decoration: BoxDecoration(
+                          color: Colors.grey.withOpacity(0.1),
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(color: Colors.grey.withOpacity(0.3)),
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(
+                              Icons.cloud_off,
+                              size: 12,
+                              color: Colors.grey[700],
+                            ),
+                            const SizedBox(width: 4),
+                            Text(
+                              'NOT SYNCED',
+                              style: TextStyle(
+                                fontSize: 10,
+                                fontWeight: FontWeight.w600,
+                                color: Colors.grey[700],
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    if (report.pendingFlagSync)
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                        decoration: BoxDecoration(
+                          color: Colors.blue.withOpacity(0.1),
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(color: Colors.blue.withOpacity(0.3)),
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(
+                              Icons.sync_disabled,
+                              size: 12,
+                              color: Colors.blue[700],
+                            ),
+                            const SizedBox(width: 4),
+                            Text(
+                              'FLAG SYNC PENDING',
+                              style: TextStyle(
+                                fontSize: 10,
+                                fontWeight: FontWeight.w600,
+                                color: Colors.blue[700],
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                  ],
+                ),
+              ],
               
               // Show verification status if available
               if (report.flaggedForVerification && report.verificationStatus != 'review') ...[

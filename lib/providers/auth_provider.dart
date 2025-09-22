@@ -4,6 +4,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:integriscan/services/auth_service.dart';
 import 'package:integriscan/services/firestore_service.dart';
+import 'package:integriscan/services/report_service.dart';
 import 'package:integriscan/utils/logger.dart';
 import 'package:integriscan/exceptions/app_exceptions.dart';
 
@@ -25,10 +26,26 @@ class AuthProvider extends ChangeNotifier {
     _isLoading = true;
     notifyListeners();
     
-    _authSubscription = _authService.authStateChanges.listen((User? user) {
+    _authSubscription = _authService.authStateChanges.listen((User? user) async {
+      final previousUser = _user;
       _user = user;
       _isLoading = false;
       notifyListeners();
+      
+      // If user just signed in (from null to user), sync reports for cross-device compatibility
+      if (previousUser == null && user != null) {
+        Logger.info('User signed in, syncing reports for cross-device access...');
+        try {
+          // Sync reports from cloud (download reports from other devices)
+          await ReportService.syncReportsFromCloud(userId: user.uid);
+          // Also sync flagged reports
+          await ReportService.syncFlaggedReportsFromCloud(userId: user.uid);
+          Logger.info('Cross-device report sync completed successfully');
+        } catch (e) {
+          Logger.error('Error during sign-in report sync', e);
+          // Don't block sign-in if sync fails
+        }
+      }
     });
   }
   
@@ -58,6 +75,20 @@ class AuthProvider extends ChangeNotifier {
       Logger.secureLog("Sign in successful", userCredential.user?.email ?? 'unknown');
       _user = userCredential.user;
       await fetchUserProfile();
+      
+      // Trigger cross-device report sync after successful sign-in
+      if (_user != null) {
+        try {
+          Logger.info('Syncing reports after sign-in for cross-device access...');
+          await ReportService.syncReportsFromCloud(userId: _user!.uid);
+          await ReportService.syncFlaggedReportsFromCloud(userId: _user!.uid);
+          Logger.info('Post-signin report sync completed');
+        } catch (e) {
+          Logger.error('Error during post-signin report sync', e);
+          // Don't fail sign-in if sync fails
+        }
+      }
+      
       _setLoading(false);
       notifyListeners();
       return true;

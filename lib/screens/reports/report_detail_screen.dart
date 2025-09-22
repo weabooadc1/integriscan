@@ -273,7 +273,7 @@ class _ReportDetailScreenState extends State<ReportDetailScreen> {
   }
 
   Widget _buildDetectionImage(DamageDetection detection) {
-    // Check if it's a Firebase Storage URL
+    // Always check if it's a Firebase Storage URL first for cross-device compatibility
     if (FirebaseStorageService.isFirebaseUrl(detection.imagePath)) {
       return FutureBuilder<String>(
         future: FirebaseStorageService.getDisplayPath(detection.imagePath, detection.reportId, detection.id),
@@ -286,7 +286,14 @@ class _ReportDetailScreenState extends State<ReportDetailScreen> {
                 borderRadius: BorderRadius.circular(8),
               ),
               child: const Center(
-                child: CircularProgressIndicator(),
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    CircularProgressIndicator(),
+                    SizedBox(height: 8),
+                    Text('Loading image...', style: TextStyle(color: Colors.grey)),
+                  ],
+                ),
               ),
             );
           }
@@ -300,7 +307,30 @@ class _ReportDetailScreenState extends State<ReportDetailScreen> {
         },
       );
     } else {
-      // It's a local file path
+      // For local files, check if they exist; if not, show a cloud sync message
+      final file = File(detection.imagePath);
+      if (!file.existsSync()) {
+        return Container(
+          height: 150,
+          decoration: BoxDecoration(
+            color: Colors.grey[200],
+            borderRadius: BorderRadius.circular(8),
+          ),
+          child: const Center(
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(Icons.cloud_download, color: Colors.grey, size: 48),
+                SizedBox(height: 8),
+                Text('Image available on original device', style: TextStyle(color: Colors.grey)),
+                Text('Sync with cloud to access', style: TextStyle(color: Colors.grey, fontSize: 12)),
+              ],
+            ),
+          ),
+        );
+      }
+      
+      // It's a local file path that exists
       return ClipRRect(
         borderRadius: BorderRadius.circular(8),
         child: _buildImageWidget(detection.imagePath),

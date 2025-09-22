@@ -19,7 +19,7 @@ class DatabaseHelper {
     final path = join(dbPath, 'app_database.db');
     return await openDatabase(
       path,
-      version: 7, // Incremented for damage type schema migration
+      version: 8, // Incremented for offline flagging support
       onCreate: _onCreate,
       onUpgrade: _onUpgrade,
     );
@@ -28,6 +28,7 @@ class DatabaseHelper {
   Future _onCreate(Database db, int version) async {
     await _createTables(db);
     await _createEngineerVerificationTable(db);
+    await _createPendingFlagOperationsTable(db);
   }
 
   Future _onUpgrade(Database db, int oldVersion, int newVersion) async {
@@ -115,6 +116,37 @@ class DatabaseHelper {
         print('Error migrating to damage type system: $e');
       }
     }
+    if (oldVersion < 8) {
+      // Add offline flagging support
+      try {
+        var result = await db.rawQuery("PRAGMA table_info(reports)");
+        bool pendingFlagSyncExists = result.any((column) => column['name'] == 'pendingFlagSync');
+        
+        if (!pendingFlagSyncExists) {
+          await db.execute('ALTER TABLE reports ADD COLUMN pendingFlagSync INTEGER NOT NULL DEFAULT 0');
+          await db.execute('ALTER TABLE reports ADD COLUMN offlineFlaggedAt TEXT');
+          print('Added offline flagging columns to reports table');
+        }
+        
+        // Create pending_flag_operations table for queuing flag operations
+        await db.execute('''
+          CREATE TABLE IF NOT EXISTS pending_flag_operations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            reportId TEXT NOT NULL,
+            operation TEXT NOT NULL,
+            operationData TEXT,
+            timestamp TEXT NOT NULL,
+            userId TEXT NOT NULL,
+            retryCount INTEGER NOT NULL DEFAULT 0,
+            FOREIGN KEY (reportId) REFERENCES reports (id)
+          )
+        ''');
+        
+        print('Successfully added offline flagging support');
+      } catch (e) {
+        print('Error adding offline flagging support: $e');
+      }
+    }
   }
 
   Future _createTables(Database db) async {
@@ -149,7 +181,9 @@ class DatabaseHelper {
         flaggedAt TEXT,
         verificationStatus TEXT NOT NULL DEFAULT 'none',
         engineerComments TEXT,
-        reviewedAt TEXT
+        reviewedAt TEXT,
+        pendingFlagSync INTEGER NOT NULL DEFAULT 0,
+        offlineFlaggedAt TEXT
       )
     ''');
 
@@ -182,6 +216,21 @@ class DatabaseHelper {
         engineerId TEXT,
         reviewedAt TEXT,
         FOREIGN KEY (originalReportId) REFERENCES reports (id)
+      )
+    ''');
+  }
+
+  Future _createPendingFlagOperationsTable(Database db) async {
+    await db.execute('''
+      CREATE TABLE pending_flag_operations (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        reportId TEXT NOT NULL,
+        operation TEXT NOT NULL,
+        operationData TEXT,
+        timestamp TEXT NOT NULL,
+        userId TEXT NOT NULL,
+        retryCount INTEGER NOT NULL DEFAULT 0,
+        FOREIGN KEY (reportId) REFERENCES reports (id)
       )
     ''');
   }
@@ -436,6 +485,125 @@ class DatabaseHelper {
     } catch (e) {
       print('Error during verification status terminology migration: $e');
     }
+  }
+
+  // Offline flagging operations methods
+  Future<int> addPendingFlagOperation(String reportId, String operation, String operationData, String userId) async {
+    final db = await database;
+    return await db.insert('pending_flag_operations', {
+      'reportId': reportId,
+      'operation': operation,
+      'operationData': operationData,
+      'timestamp': DateTime.now().toIso8601String(),
+      'userId': userId,
+      'retryCount': 0,
+    });
+  }
+
+  Future<List<Map<String, dynamic>>> getPendingFlagOperations() async {
+    final db = await database;
+    return await db.query('pending_flag_operations', orderBy: 'timestamp ASC');
+  }
+
+  Future<void> removePendingFlagOperation(int operationId) async {
+    final db = await database;
+    await db.delete('pending_flag_operations', where: 'id = ?', whereArgs: [operationId]);
+  }
+
+  Future<void> incrementRetryCount(int operationId) async {
+    final db = await database;
+    await db.rawUpdate(
+      'UPDATE pending_flag_operations SET retryCount = retryCount + 1 WHERE id = ?',
+      [operationId]
+    );
+  }
+
+  Future<int> updateReportOfflineFlagStatus(String reportId, {bool? pendingFlagSync, String? offlineFlaggedAt}) async {
+    final db = await database;
+    Map<String, dynamic> values = {};
+    
+    if (pendingFlagSync != null) {
+      values['pendingFlagSync'] = pendingFlagSync ? 1 : 0;
+    }
+    if (offlineFlaggedAt != null) {
+      values['offlineFlaggedAt'] = offlineFlaggedAt;
+    }
+    
+    return await db.update(
+      'reports',
+      values,
+      where: 'id = ?',
+      whereArgs: [reportId],
+    );
+  }
+
+  Future<List<Map<String, dynamic>>> getReportsWithPendingFlagSync() async {
+    final db = await database;
+    return await db.query(
+      'reports',
+      where: 'pendingFlagSync = ?',
+      whereArgs: [1],
+      orderBy: 'offlineFlaggedAt DESC',
+    );
+  }
+
+  /// Get the last sync time for a user
+  Future<DateTime?> getLastSyncTime(String userId) async {
+    final db = await database;
+    try {
+      final result = await db.query(
+        'user_sync_times',
+        where: 'userId = ?',
+        whereArgs: [userId],
+        limit: 1,
+      );
+      
+      if (result.isNotEmpty) {
+        final timestamp = result.first['lastSyncTime'] as String;
+        return DateTime.parse(timestamp);
+      }
+      return null;
+    } catch (e) {
+      // Table might not exist yet, create it
+      await _createUserSyncTimesTable(db);
+      return null;
+    }
+  }
+
+  /// Update the last sync time for a user
+  Future<void> updateLastSyncTime(String userId) async {
+    final db = await database;
+    try {
+      await db.insert(
+        'user_sync_times',
+        {
+          'userId': userId,
+          'lastSyncTime': DateTime.now().toIso8601String(),
+        },
+        conflictAlgorithm: ConflictAlgorithm.replace,
+      );
+    } catch (e) {
+      // Table might not exist yet, create it
+      await _createUserSyncTimesTable(db);
+      await db.insert(
+        'user_sync_times',
+        {
+          'userId': userId,
+          'lastSyncTime': DateTime.now().toIso8601String(),
+        },
+        conflictAlgorithm: ConflictAlgorithm.replace,
+      );
+    }
+  }
+
+  /// Create user sync times table
+  Future<void> _createUserSyncTimesTable(Database db) async {
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS user_sync_times (
+        userId TEXT PRIMARY KEY,
+        lastSyncTime TEXT NOT NULL
+      )
+    ''');
   }
 }
 
