@@ -100,9 +100,11 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> with WidgetsBinding
       await Future.delayed(const Duration(milliseconds: 300));
       _initializePTZ();
       
-      // Finally, attempt background sync for all unsynced reports
-      await Future.delayed(const Duration(seconds: 1));
-      _syncUnsyncedReportsForCurrentUser();
+  // NOTE: We intentionally do NOT start a background sync here.
+  // Starting an automatic sync immediately when the RTSP screen
+  // initializes can race with user actions (generate/discard).
+  // Background sync should run on a schedule or be explicitly
+  // requested by the user elsewhere in the app.
       
     } catch (e) {
       print('🚨 Error during component initialization: $e');
@@ -741,7 +743,7 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> with WidgetsBinding
       print('Model info: $modelInfo');
       
       // Load a sample image from assets to test
-      final ByteData data = await rootBundle.load('assets/images/TEsting2.jpg');
+      final ByteData data = await rootBundle.load('assets/images/testing1.png');
       final Uint8List bytes = data.buffer.asUint8List();
       
       print('Testing model with sample image (${bytes.length} bytes)');
@@ -1504,7 +1506,7 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> with WidgetsBinding
         userId: userId,
         sessionName: 'RTSP Stream Session ${DateTime.now().day}/${DateTime.now().month}/${DateTime.now().year}',
         detections: _detectionHistory,
-        trySyncToCloud: true, // This will attempt sync but won't fail if offline
+        trySyncToCloud: false, // Don't auto-upload to cloud - user will decide later
       );
 
       print('Report generated successfully: ${report.id}');
@@ -1533,22 +1535,17 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> with WidgetsBinding
       if (mounted) {
         // Show success message
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-              report.synced 
-                ? 'Report generated and synced to cloud successfully!' 
-                : 'Report generated and saved locally! Will sync when connection is available.',
-            ),
+          const SnackBar(
+            content: Text('Report generated and saved locally! You can choose to upload it to cloud later.'),
             backgroundColor: Colors.green,
-            duration: const Duration(seconds: 4),
+            duration: Duration(seconds: 4),
           ),
         );
 
-        // Trigger background sync for all unsynced reports for this user (non-blocking)
-        ReportService.syncAllUnsyncedReportsStatic(userId: userId).catchError((e) {
-          print('Background sync error: $e');
-          // Don't show error to user - this is background operation
-        });
+        // Intentionally do NOT trigger background sync here. The user should
+        // explicitly choose to upload from the report screen. Leaving this
+        // out prevents race conditions where a background upload runs while
+        // the user is choosing to discard the report.
 
         // End the analysis session before navigating to report
         await _endAnalysisSession();

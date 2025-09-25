@@ -1,8 +1,11 @@
 import 'package:flutter/material.dart';
+import 'package:integriscan/app_keys.dart';
 import 'package:integriscan/models/report_models.dart';
 import 'package:integriscan/services/recommendations_service.dart';
 import 'package:integriscan/services/firebase_storage_service.dart';
+import 'package:integriscan/services/report_service.dart';
 import 'package:integriscan/component/primarybutton.dart';
+
 import 'dart:io';
 
 class ReportDetailScreen extends StatefulWidget {
@@ -685,16 +688,33 @@ class _ReportDetailScreenState extends State<ReportDetailScreen> {
       child: Column(
         children: [
           if (widget.fromAnalysis) ...[
-            // Show when coming from RTSP analysis - go to home
+            // Show when coming from RTSP analysis - offer choice to upload or not
+            const SizedBox(height: 8),
+            Text(
+              'Choose what to do with this report:',
+              style: TextStyle(
+                fontSize: 16,
+                fontWeight: FontWeight.w500,
+                color: Colors.grey[700],
+              ),
+              textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 16),
+            
+            // Button to save and upload report
             PrimaryButton(
-              text: "Finish & Go to Home",
-              press: () {
-                // Navigate to home screen and clear all previous routes
-                Navigator.of(context).pushNamedAndRemoveUntil(
-                  '/', // Home route
-                  (Route<dynamic> route) => false, // Remove all routes
-                );
-              },
+              text: "Save & Upload Report",
+              press: () => _uploadReportAndGoHome(context),
+            ),
+            
+            const SizedBox(height: 12),
+            
+            // Button to discard report and go home
+            PrimaryButton(
+              text: "Go Home (Discard Report)",
+              press: () => _discardReportAndGoHome(context),
+              color: Colors.red[600]!,
+              textColor: Colors.white,
             ),
           ] else ...[
             // Show when viewing from reports list - just go back
@@ -707,6 +727,217 @@ class _ReportDetailScreenState extends State<ReportDetailScreen> {
           ],
         ],
       ),
+    );
+  }
+
+  Future<void> _uploadReportAndGoHome(BuildContext context) async {
+    // Show loading dialog
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (BuildContext context) {
+        return AlertDialog(
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: const [
+              CircularProgressIndicator(),
+              SizedBox(height: 16),
+              Text('Uploading report to cloud...'),
+            ],
+          ),
+        );
+      },
+    );
+
+    try {
+      // Upload the report to cloud
+      final success = await ReportService.uploadReportToCloud(widget.report.id);
+      
+      // Use Future.microtask to ensure all UI operations happen safely
+      Future.microtask(() {
+        if (mounted) {
+          // Close loading dialog
+          Navigator.of(context).pop();
+          
+          if (success) {
+            // Show success message
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text('Report uploaded to cloud successfully!'),
+                backgroundColor: Colors.green,
+                duration: Duration(seconds: 3),
+              ),
+            );
+          }
+          
+          // Navigate to home after a short delay
+          Future.delayed(const Duration(milliseconds: 500), () {
+            if (mounted) {
+              Navigator.of(context).pushNamedAndRemoveUntil(
+                '/', // Home route
+                (Route<dynamic> route) => false, // Remove all routes
+              );
+            }
+          });
+        }
+      });
+    } catch (e) {
+      // Use Future.microtask to ensure all UI operations happen safely
+      Future.microtask(() {
+        if (mounted) {
+          // Close loading dialog
+          Navigator.of(context).pop();
+          
+          // Show error dialog
+          showDialog(
+            context: context,
+            builder: (BuildContext context) {
+              return AlertDialog(
+                title: const Text('Upload Failed'),
+                content: Text(
+                  'Failed to upload report to cloud: ${e.toString()}\n\n'
+                  'The report is still saved locally. You can try uploading later from the reports list.',
+                ),
+                actions: [
+                  TextButton(
+                    onPressed: () {
+                      Navigator.of(context).pop(); // Close error dialog
+                    },
+                    child: const Text('Try Again Later'),
+                  ),
+                  TextButton(
+                    onPressed: () {
+                      Navigator.of(context).pop(); // Close error dialog
+                      // Go home anyway after a short delay
+                      Future.delayed(const Duration(milliseconds: 300), () {
+                        if (mounted) {
+                          Navigator.of(context).pushNamedAndRemoveUntil(
+                            '/', // Home route
+                            (Route<dynamic> route) => false, // Remove all routes
+                          );
+                        }
+                      });
+                    },
+                    child: const Text('Go Home Anyway'),
+                  ),
+                ],
+              );
+            },
+          );
+        }
+      });
+    }
+  }
+
+  void _discardReportAndGoHome(BuildContext context) {
+    // Show confirmation dialog
+    showDialog(
+      context: context,
+      builder: (BuildContext context) {
+        return AlertDialog(
+          title: const Text('Discard Report'),
+          content: const Text(
+            'Are you sure you want to discard this report? '
+            'All detection data will be permanently deleted and cannot be recovered.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () {
+                Navigator.of(context).pop(); // Close dialog
+              },
+              child: const Text('Cancel'),
+            ),
+            TextButton(
+              onPressed: () async {
+                Navigator.of(context).pop(); // Close dialog
+                
+                // Show loading dialog while deleting
+                showDialog(
+                  context: context,
+                  barrierDismissible: false,
+                  builder: (BuildContext context) {
+                    return const AlertDialog(
+                      content: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          CircularProgressIndicator(),
+                          SizedBox(height: 16),
+                          Text('Deleting report...'),
+                        ],
+                      ),
+                    );
+                  },
+                );
+                
+                try {
+                  // Delete the report from local database
+                  await ReportService.deleteReport(widget.report.id);
+                  
+                  // Use global navigator and scaffold messenger keys to avoid
+                  // using a possibly deactivated BuildContext after async work.
+                  try {
+                    // Close loading dialog via global navigator
+                    AppKeys.navigatorKey.currentState?.pop();
+                  } catch (e) {
+                    print('Error closing dialog: $e');
+                  }
+
+                  try {
+                    // Show success snackbar via global scaffold messenger
+                    AppKeys.scaffoldMessengerKey.currentState?.showSnackBar(
+                      const SnackBar(
+                        content: Text('Report discarded successfully'),
+                        backgroundColor: Colors.orange,
+                        duration: Duration(seconds: 2),
+                      ),
+                    );
+                  } catch (e) {
+                    print('Error showing snackbar: $e');
+                  }
+
+                  // Navigate to home after a short delay using the global navigator
+                  await Future.delayed(const Duration(milliseconds: 700));
+                  try {
+                    AppKeys.navigatorKey.currentState?.pushNamedAndRemoveUntil(
+                      '/',
+                      (Route<dynamic> route) => false,
+                    );
+                  } catch (e) {
+                    print('Error navigating home: $e');
+                    try {
+                      AppKeys.navigatorKey.currentState?.popUntil((route) => route.isFirst);
+                    } catch (e2) {
+                      print('Error with fallback navigation: $e2');
+                    }
+                  }
+                } catch (e) {
+                  print('Error deleting report: $e');
+                  if (mounted) {
+                    try {
+                      AppKeys.navigatorKey.currentState?.pop();
+                    } catch (e) {
+                      print('Error closing dialog: $e');
+                    }
+
+                    try {
+                      AppKeys.scaffoldMessengerKey.currentState?.showSnackBar(
+                        SnackBar(
+                          content: Text('Failed to delete report: ${e.toString()}'),
+                          backgroundColor: Colors.red,
+                          duration: const Duration(seconds: 3),
+                        ),
+                      );
+                    } catch (e) {
+                      print('Error showing error message: $e');
+                    }
+                  }
+                }
+              },
+              child: const Text('Discard', style: TextStyle(color: Colors.red)),
+            ),
+          ],
+        );
+      },
     );
   }
 }

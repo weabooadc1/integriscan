@@ -11,7 +11,29 @@ class DatabaseHelper {
   Future<Database> get database async {
     if (_database != null) return _database!;
     _database = await _initDb();
+    // Ensure 'deleted' column exists for older databases that may not have been migrated
+    try {
+      await _ensureDeletedColumnExists(_database!);
+    } catch (e) {
+      print('Warning: failed to ensure deleted column exists: $e');
+    }
     return _database!;
+  }
+
+  /// Ensure the 'deleted' column exists in reports table; if missing, add it.
+  Future<void> _ensureDeletedColumnExists(Database db) async {
+    try {
+      final result = await db.rawQuery("PRAGMA table_info(reports)");
+      final hasDeleted = result.any((column) => column['name'] == 'deleted');
+      if (!hasDeleted) {
+        print('Reports table missing "deleted" column - adding it now');
+        await db.execute('ALTER TABLE reports ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0');
+        print('Added "deleted" column to reports table');
+      }
+    } catch (e) {
+      // If reports table doesn't exist yet (first-run), ignore; onCreate will create with the column
+      print('Error while checking/adding deleted column (may be safe on first run): $e');
+    }
   }
 
   Future<Database> _initDb() async {
@@ -125,6 +147,8 @@ class DatabaseHelper {
         if (!pendingFlagSyncExists) {
           await db.execute('ALTER TABLE reports ADD COLUMN pendingFlagSync INTEGER NOT NULL DEFAULT 0');
           await db.execute('ALTER TABLE reports ADD COLUMN offlineFlaggedAt TEXT');
+          // Add deleted flag to mark reports that were removed locally but may be in-flight for upload
+          await db.execute('ALTER TABLE reports ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0');
           print('Added offline flagging columns to reports table');
         }
         
@@ -184,6 +208,7 @@ class DatabaseHelper {
         reviewedAt TEXT,
         pendingFlagSync INTEGER NOT NULL DEFAULT 0,
         offlineFlaggedAt TEXT
+        ,deleted INTEGER NOT NULL DEFAULT 0
       )
     ''');
 
@@ -316,14 +341,29 @@ class DatabaseHelper {
   Future<List<Map<String, dynamic>>> getUnsyncedReports({String? userId}) async {
     final db = await database;
     if (userId != null) {
-      return await db.query('reports', where: 'synced = 0 AND userId = ?', whereArgs: [userId]);
+      // Exclude reports that have been marked deleted locally
+      return await db.query('reports', where: 'synced = 0 AND deleted = 0 AND userId = ?', whereArgs: [userId]);
     }
-    return await db.query('reports', where: 'synced = 0');
+    return await db.query('reports', where: 'synced = 0 AND deleted = 0');
   }
 
   Future<void> markReportAsSynced(String reportId) async {
     final db = await database;
     await db.update('reports', {'synced': 1}, where: 'id = ?', whereArgs: [reportId]);
+  }
+
+  /// Mark a report as deleted locally (soft delete) so that any in-flight syncs will skip it
+  Future<int> markReportDeleted(String reportId) async {
+    final db = await database;
+    return await db.update('reports', {'deleted': 1}, where: 'id = ?', whereArgs: [reportId]);
+  }
+
+  /// Check whether a report is marked deleted
+  Future<bool> isReportDeleted(String reportId) async {
+    final db = await database;
+    final results = await db.query('reports', where: 'id = ?', whereArgs: [reportId], limit: 1);
+    if (results.isEmpty) return true; // If it's gone, treat as deleted
+    return (results.first['deleted'] ?? 0) == 1;
   }
 
   Future<List<Map<String, dynamic>>> getReports({String? userId}) async {

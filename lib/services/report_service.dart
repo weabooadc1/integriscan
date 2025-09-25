@@ -44,6 +44,13 @@ class ReportService {
   /// Try to sync a single report to Firestore and mark as synced if successful
   Future<void> trySyncReportToCloud(DetectionReport report) async {
     try {
+      // Ensure report hasn't been deleted while a sync was queued
+      final dbCheck = DatabaseHelper();
+      final isDeleted = await dbCheck.isReportDeleted(report.id);
+      if (isDeleted) {
+        print('Skipping sync for report ${report.id} because it is marked deleted');
+        return;
+      }
       print('Attempting to sync report ${report.id} to Firestore...');
       
       // Check connectivity first
@@ -73,6 +80,17 @@ class ReportService {
       print('Firestore sync failed for report ${report.id}: $e');
       // Don't rethrow - we want to continue with other reports
     }
+  }
+
+  /// Check whether a report still exists and is not marked deleted before attempting upload
+  Future<bool> checkBeforeUpload(String reportId) async {
+    final db = DatabaseHelper();
+    final isDeleted = await db.isReportDeleted(reportId);
+    if (isDeleted) {
+      print('checkBeforeUpload: report $reportId is deleted or missing');
+      return false;
+    }
+    return true;
   }
 
   /// Background sync for all unsynced reports
@@ -781,10 +799,12 @@ class ReportService {
     try {
       print('Deleting report: $reportId');
       final db = DatabaseHelper();
-      
-      // Delete from local database first
+      // Soft-mark as deleted immediately so any in-flight upload/sync will skip it
+      await db.markReportDeleted(reportId);
+      print('Report marked deleted locally: $reportId');
+      // Proceed to delete from local database (hard delete) after marking
       await db.deleteReport(reportId);
-      print('Report deleted from local database: $reportId');
+      print('Report deleted from local database (hard delete): $reportId');
       
       // Always try to delete from Firestore (let Firestore handle connectivity)
       try {
@@ -1106,7 +1126,6 @@ class ReportService {
       print('Failed to sync updated verification to Firestore: $e');
     }
   }
-  }
 
   /// Update engineer verification status and sync to Firestore
   Future<bool> updateVerificationStatus(String reportId, String status, 
@@ -1126,3 +1145,52 @@ class ReportService {
       throw Exception('Failed to update verification status: $e');
     }
   }
+
+  /// Manually upload a single report to the cloud
+  static Future<bool> uploadReportToCloud(String reportId) async {
+    try {
+      print('Manually uploading report $reportId to cloud...');
+      
+      // Check connectivity first
+      final connectivityService = ConnectivityService();
+      if (!connectivityService.isConnected) {
+        print('No connectivity - cannot upload report');
+        throw Exception('No internet connection available');
+      }
+      
+      // Get the report from local database
+      final report = await ReportService.getReport(reportId);
+      
+      if (report == null) {
+        print('Report `$reportId not found in local database');
+        throw Exception('Report not found');
+      }
+      
+      if (report.synced) {
+        print('Report `$reportId is already synced to cloud');
+        return true; // Already uploaded
+      }
+      
+      // Test Firebase connection
+      final connectionOk = await FirestoreSyncService.testConnection();
+      if (!connectionOk) {
+        print('Firebase connection test failed');
+        throw Exception('Cannot connect to Firebase');
+      }
+      
+      // Upload to Firestore
+      await FirestoreSyncService.uploadReport(report);
+      print('Report uploaded to Firestore successfully');
+      
+      // Mark as synced in local DB
+      final db = DatabaseHelper();
+      await db.markReportAsSynced(report.id);
+      print('Report marked as synced in local database');
+      
+      return true;
+    } catch (e) {
+      print('Failed to upload report to cloud: $e');
+      rethrow; // Let the caller handle the error
+    }
+  }
+}

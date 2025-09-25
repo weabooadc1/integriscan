@@ -10,6 +10,7 @@ import 'package:integriscan/database/database_helper.dart';
 import 'package:integriscan/services/connectivity_service.dart';
 import 'package:integriscan/services/report_service.dart';
 import 'firebase_options.dart';
+import 'app_keys.dart';
 
 
 Future<void> main() async {
@@ -52,6 +53,8 @@ class IndexPage extends StatelessWidget {
       ],
       child: MaterialApp(
         debugShowCheckedModeBanner: false,
+        navigatorKey: AppKeys.navigatorKey,
+        scaffoldMessengerKey: AppKeys.scaffoldMessengerKey,
         title: 'IntegriScan',
         theme: ThemeData(
           primaryColor: kPrimaryColor,

@@ -1,0 +1,48 @@
+  /// Manually upload a single report to the cloud
+  static Future<bool> uploadReportToCloud(String reportId) async {
+    try {
+      print('Manually uploading report $reportId to cloud...');
+      
+      // Check connectivity first
+      final connectivityService = ConnectivityService();
+      if (!connectivityService.isConnected) {
+        print('No connectivity - cannot upload report');
+        throw Exception('No internet connection available');
+      }
+      
+      // Get the report from local database
+      final db = DatabaseHelper();
+      final report = await ReportService().getReport(reportId);
+      
+      if (report == null) {
+        print('Report $reportId not found in local database');
+        throw Exception('Report not found');
+      }
+      
+      if (report.synced) {
+        print('Report $reportId is already synced to cloud');
+        return true; // Already uploaded
+      }
+      
+      // Test Firebase connection
+      final connectionOk = await FirestoreSyncService.testConnection();
+      if (!connectionOk) {
+        print('Firebase connection test failed');
+        throw Exception('Cannot connect to Firebase');
+      }
+      
+      // Upload to Firestore
+      await FirestoreSyncService.uploadReport(report);
+      print('Report uploaded to Firestore successfully');
+      
+      // Mark as synced in local DB
+      await db.markReportAsSynced(report.id);
+      print('Report marked as synced in local database');
+      
+      return true;
+    } catch (e) {
+      print('Failed to upload report to cloud: $e');
+      rethrow; // Let the caller handle the error
+    }
+  }
+}

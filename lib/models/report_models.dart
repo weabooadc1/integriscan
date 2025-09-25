@@ -18,6 +18,7 @@ class DetectionReport {
   // Offline flagging support
   final bool pendingFlagSync;
   final DateTime? offlineFlaggedAt;
+  final bool deleted;
 
   DetectionReport({
     required this.id,
@@ -34,6 +35,7 @@ class DetectionReport {
     this.reviewedAt,
     this.pendingFlagSync = false,
     this.offlineFlaggedAt,
+    this.deleted = false,
   });
 
   Map<String, dynamic> toMap() {
@@ -56,6 +58,7 @@ class DetectionReport {
       'reviewedAt': reviewedAt?.toIso8601String(),
       'pendingFlagSync': pendingFlagSync ? 1 : 0,
       'offlineFlaggedAt': offlineFlaggedAt?.toIso8601String(),
+      'deleted': deleted ? 1 : 0,
     };
   }
 
@@ -86,6 +89,7 @@ class DetectionReport {
       reviewedAt: map['reviewedAt'] != null ? DateTime.parse(map['reviewedAt']) : null,
       pendingFlagSync: (map['pendingFlagSync'] ?? 0) == 1,
       offlineFlaggedAt: map['offlineFlaggedAt'] != null ? DateTime.parse(map['offlineFlaggedAt']) : null,
+      deleted: (map['deleted'] ?? 0) == 1,
     );
   }
 }

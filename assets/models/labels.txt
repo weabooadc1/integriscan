@@ -1,4 +1,4 @@
 Crack
-Rust
+Corrosion
 Deformation
 No Damage
