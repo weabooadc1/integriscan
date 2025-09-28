@@ -784,47 +784,55 @@ class _ReportDetailScreenState extends State<ReportDetailScreen> {
     } catch (e) {
       // Use Future.microtask to ensure all UI operations happen safely
       Future.microtask(() {
-        if (mounted) {
-          // Close loading dialog
-          Navigator.of(context).pop();
-          
-          // Show error dialog
-          showDialog(
-            context: context,
-            builder: (BuildContext context) {
-              return AlertDialog(
-                title: const Text('Upload Failed'),
-                content: Text(
-                  'Failed to upload report to cloud: ${e.toString()}\n\n'
-                  'The report is still saved locally. You can try uploading later from the reports list.',
-                ),
-                actions: [
-                  TextButton(
-                    onPressed: () {
-                      Navigator.of(context).pop(); // Close error dialog
-                    },
-                    child: const Text('Try Again Later'),
-                  ),
-                  TextButton(
-                    onPressed: () {
-                      Navigator.of(context).pop(); // Close error dialog
-                      // Go home anyway after a short delay
-                      Future.delayed(const Duration(milliseconds: 300), () {
-                        if (mounted) {
-                          Navigator.of(context).pushNamedAndRemoveUntil(
-                            '/', // Home route
-                            (Route<dynamic> route) => false, // Remove all routes
-                          );
-                        }
-                      });
-                    },
-                    child: const Text('Go Home Anyway'),
-                  ),
-                ],
-              );
-            },
-          );
+        if (!mounted) return;
+
+        // Close loading dialog via the root navigator (safer)
+        try {
+          AppKeys.navigatorKey.currentState?.pop();
+        } catch (_) {
+          // Fallback to context pop if needed
+          try {
+            Navigator.of(context).pop();
+          } catch (_) {}
         }
+
+        // Show error dialog using the dialog's builder context so its pop only closes the dialog
+        showDialog(
+          context: context,
+          builder: (BuildContext dialogContext) {
+            return AlertDialog(
+              title: const Text('Upload Failed'),
+              content: Text(
+                'Failed to upload report to cloud: ${e.toString()}\n\n'
+                'The report is still saved locally. You can try uploading later from the reports list.',
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () {
+                    // Only close the error dialog and stay on this screen
+                    Navigator.of(dialogContext).pop();
+                  },
+                  child: const Text('Try Again Later'),
+                ),
+                TextButton(
+                  onPressed: () {
+                    // Close the dialog first
+                    Navigator.of(dialogContext).pop();
+
+                    // Then navigate home using the global navigator to avoid popping routes unintentionally
+                    Future.delayed(const Duration(milliseconds: 300), () {
+                      AppKeys.navigatorKey.currentState?.pushNamedAndRemoveUntil(
+                        '/',
+                        (Route<dynamic> route) => false,
+                      );
+                    });
+                  },
+                  child: const Text('Go Home Anyway'),
+                ),
+              ],
+            );
+          },
+        );
       });
     }
   }
