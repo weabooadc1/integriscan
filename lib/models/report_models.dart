@@ -125,7 +125,7 @@ class DamageDetection {
       'confidence': confidence,
       'imagePath': imagePath,
       'timestamp': timestamp.toIso8601String(),
-      'boundingBox': boundingBox?.toMap(),
+      'boundingBox': boundingBox != null ? jsonEncode(boundingBox!.toMap()) : null,
       'severity': severity,
       'recommendations': recommendations.join('|'),
     };

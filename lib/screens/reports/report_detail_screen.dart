@@ -28,34 +28,26 @@ class _ReportDetailScreenState extends State<ReportDetailScreen> {
   @override
   void initState() {
     super.initState();
-    // If coming from analysis, add extra delay to ensure all resources are cleaned up
-    if (widget.fromAnalysis) {
-      print('🔍 ReportDetailScreen: Coming from analysis, adding initialization delay...');
-      Future.delayed(const Duration(milliseconds: 1500), () {
-        if (mounted) {
-          setState(() {
-            _isInitializing = false;
-          });
-          print('🔍 ReportDetailScreen: Initialization complete, showing content');
-        }
-      });
-    } else {
-      // Normal initialization for regular navigation
-      Future.delayed(const Duration(milliseconds: 300), () {
-        if (mounted) {
-          setState(() {
-            _isInitializing = false;
-          });
-        }
-      });
-    }
+    // Initialize immediately without delay to prevent timing issues
+    print('🔍 ReportDetailScreen: Initializing immediately...');
+    _isInitializing = false;
+    print('🔍 ReportDetailScreen: Initialization complete, ready to build content');
   }
 
   @override
   Widget build(BuildContext context) {
-    // Show loading screen if initializing from analysis
-    if (_isInitializing) {
-      return Scaffold(
+    print('🔍 ReportDetailScreen.build() START - context: ${context.mounted}');
+    print('🔍 Report ID: ${widget.report.id}, fromAnalysis: ${widget.fromAnalysis}');
+    print('🔍 Detections count: ${widget.report.detections.length}');
+    print('🔍 IsInitializing: $_isInitializing');
+    
+    try {
+      print('🔍 Starting widget construction...');
+      
+      // Show loading screen if initializing from analysis
+      if (_isInitializing) {
+        print('🔍 Building loading Scaffold...');
+        return Scaffold(
         backgroundColor: Colors.grey[50],
         body: Center(
           child: Column(
@@ -79,13 +71,17 @@ class _ReportDetailScreenState extends State<ReportDetailScreen> {
       );
     }
     
+    print('🔍 Building main WillPopScope widget...');
     return WillPopScope(
       onWillPop: () async {
+        print('🔍 WillPopScope onWillPop triggered');
         // Force garbage collection when leaving the screen
         await Future.delayed(const Duration(milliseconds: 100));
         return true;
       },
-      child: Scaffold(
+      child: () {
+        print('🔍 Building main Scaffold widget...');
+        return Scaffold(
         backgroundColor: Colors.grey[50],
         appBar: AppBar(
           title: Text(widget.report.sessionName),
@@ -101,22 +97,79 @@ class _ReportDetailScreenState extends State<ReportDetailScreen> {
         ),
         body: SafeArea(
           child: SingleChildScrollView(
-            child: Column(
+            child: (() {
+              print('🔍 Building Column with child widgets...');
+              return Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                _buildReportHeader(),
-                _buildSummaryCard(),
-                _buildDetectionsList(),
-                _buildRecommendationsCard(),
-                _buildFinishButton(context),
+                (() {
+                  print('🔍 Building _buildReportHeader...');
+                  return _buildReportHeader();
+                })(),
+                (() {
+                  print('🔍 Building _buildSummaryCard...');
+                  return _buildSummaryCard();
+                })(),
+                (() {
+                  print('🔍 Building _buildDetectionsList...');
+                  return _buildDetectionsList();
+                })(),
+                (() {
+                  print('🔍 Building _buildRecommendationsCard...');
+                  return _buildRecommendationsCard();
+                })(),
+                (() {
+                  print('🔍 Building _buildFinishButton...');
+                  return _buildFinishButton(context);
+                })(),
                 // Add some padding at the bottom to prevent overflow
                 const SizedBox(height: 20),
               ],
-            ),
+            );
+            })(),
           ),
         ),
-      ),
+      );
+      }(),
     );
+    } catch (e, stackTrace) {
+      print('🚨 CRITICAL: ReportDetailScreen.build() CRASHED: $e');
+      print('🚨 Stack trace: $stackTrace');
+      return Scaffold(
+        backgroundColor: Colors.grey[50],
+        appBar: AppBar(
+          title: const Text('Report Error'),
+          backgroundColor: Colors.red,
+          foregroundColor: Colors.white,
+        ),
+        body: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              const Icon(Icons.error, size: 64, color: Colors.red),
+              const SizedBox(height: 16),
+              const Text(
+                'Unable to load report details',
+                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 8),
+              Text(
+                'Error: ${e.toString()}',
+                style: const TextStyle(fontSize: 14, color: Colors.grey),
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 24),
+              ElevatedButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text('Go Back'),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
   }
 
   Widget _buildReportHeader() {
@@ -557,7 +610,9 @@ class _ReportDetailScreenState extends State<ReportDetailScreen> {
                 ),
               ),
             ] else ...[
-              ...widget.report.detections.map((detection) => _buildRecommendationSection(detection)),
+              // Group detections by damage type to avoid duplicate recommendations
+              ..._getUniqueRecommendationsByDamageType().entries.map((entry) => 
+                _buildRecommendationSection(entry.key, entry.value)),
             ],
           ],
         ),
@@ -565,9 +620,25 @@ class _ReportDetailScreenState extends State<ReportDetailScreen> {
     );
   }
 
-  Widget _buildRecommendationSection(DamageDetection detection) {
+  // Helper method to group detections by damage type
+  Map<String, List<DamageDetection>> _getUniqueRecommendationsByDamageType() {
+    final Map<String, List<DamageDetection>> groupedDetections = {};
+    
+    for (final detection in widget.report.detections) {
+      final damageType = detection.damageType.toLowerCase();
+      if (groupedDetections.containsKey(damageType)) {
+        groupedDetections[damageType]!.add(detection);
+      } else {
+        groupedDetections[damageType] = [detection];
+      }
+    }
+    
+    return groupedDetections;
+  }
+
+  Widget _buildRecommendationSection(String damageType, List<DamageDetection> detections) {
     // Get full recommendation data from RecommendationsService
-    final recommendation = RecommendationsService.getRecommendation(detection.damageType);
+    final recommendation = RecommendationsService.getRecommendation(damageType);
     
     if (recommendation == null) {
       return Container(
@@ -581,7 +652,7 @@ class _ReportDetailScreenState extends State<ReportDetailScreen> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(
-              '${detection.damageType} - No Recommendations Available',
+              '${damageType.toUpperCase()} - No Recommendations Available',
               style: const TextStyle(
                 fontWeight: FontWeight.w600,
                 fontSize: 16,
@@ -602,7 +673,7 @@ class _ReportDetailScreenState extends State<ReportDetailScreen> {
 
     return ExpansionTile(
       title: Text(
-        '${detection.damageType} Repair Guide',
+        'Engineer Recommendation for ${damageType.toUpperCase()} Damage',
         style: const TextStyle(fontWeight: FontWeight.w600),
       ),
       children: [
@@ -611,23 +682,11 @@ class _ReportDetailScreenState extends State<ReportDetailScreen> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              _buildRecommendationItem('Urgency', recommendation.urgency, Colors.red),
-              _buildRecommendationItem('Estimated Cost', recommendation.estimatedCost, Colors.green),
-              _buildRecommendationItem('Time to Complete', recommendation.timeToComplete, Colors.blue),
-              _buildRecommendationItem('Skill Level', recommendation.skillLevel, Colors.orange),
-              
               const SizedBox(height: 16),
-              const Text('Steps:', style: TextStyle(fontWeight: FontWeight.w600)),
+              const Text('Recommendation', style: TextStyle(fontWeight: FontWeight.w600)),
               ...recommendation.recommendations.map((rec) => Padding(
                 padding: const EdgeInsets.only(left: 16, top: 4),
-                child: Text('• $rec'),
-              )),
-              
-              const SizedBox(height: 16),
-              const Text('Materials Needed:', style: TextStyle(fontWeight: FontWeight.w600)),
-              ...recommendation.materials.map((material) => Padding(
-                padding: const EdgeInsets.only(left: 16, top: 4),
-                child: Text('• $material'),
+                child: Text('$rec'),
               )),
               
               const SizedBox(height: 16),
@@ -645,7 +704,9 @@ class _ReportDetailScreenState extends State<ReportDetailScreen> {
                   borderRadius: BorderRadius.circular(4),
                 ),
                 child: Text(
-                  'Detection Confidence: ${(detection.confidence * 100).toStringAsFixed(1)}%',
+                  detections.length == 1 
+                    ? 'Detection Confidence: ${(detections.first.confidence * 100).toStringAsFixed(1)}%'
+                    : 'Total Detections: ${detections.length} instances',
                   style: TextStyle(
                     fontSize: 12,
                     fontWeight: FontWeight.w600,
@@ -660,17 +721,6 @@ class _ReportDetailScreenState extends State<ReportDetailScreen> {
     );
   }
 
-  Widget _buildRecommendationItem(String label, String value, Color color) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 8),
-      child: Row(
-        children: [
-          Text('$label: ', style: const TextStyle(fontWeight: FontWeight.w600)),
-          Text(value, style: TextStyle(color: color)),
-        ],
-      ),
-    );
-  }
 
   String _formatDate(DateTime date) {
     return '${date.day}/${date.month}/${date.year} ${date.hour}:${date.minute.toString().padLeft(2, '0')}';

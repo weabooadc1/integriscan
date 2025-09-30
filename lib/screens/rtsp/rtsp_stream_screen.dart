@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_vlc_player/flutter_vlc_player.dart';
 import 'package:integriscan/constant.dart';
+import 'package:integriscan/models/report_models.dart';
+import 'package:integriscan/screens/common/loading_buffer_screen.dart';
 import 'package:integriscan/services/tflite_service.dart';
 import 'package:integriscan/services/frame_capture_service.dart';
 import 'package:integriscan/services/report_service.dart';
@@ -69,6 +71,8 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> with WidgetsBinding
   bool _showBoundingBoxes = true;
   // Navigation guard to prevent setState while navigating away
   bool _isNavigating = false;
+  // Cleanup protection to prevent background operations during report generation
+  bool _isCleaningUp = false;
 
   @override
   void initState() {
@@ -845,6 +849,14 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> with WidgetsBinding
   }
 
   void _stopAutoScan() {
+    // Enhanced safety check - don't do anything if widget is disposed, navigating, or cleaning up
+    if (!mounted || _isNavigating || _isCleaningUp) {
+      print('🛑 Auto-scan stop requested but widget disposed/navigating/cleaning up - ignoring');
+      print('🛑   mounted: $mounted, _isNavigating: $_isNavigating, _isCleaningUp: $_isCleaningUp');
+      print('🛑 Stack trace: ${StackTrace.current}');
+      return;
+    }
+    
     print('🛑 Stopping Auto-scan workflow');
     
     _autoScanTimer?.cancel();
@@ -1533,6 +1545,19 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> with WidgetsBinding
       }
 
       if (mounted) {
+        // Set cleanup flag early to prevent any background operations
+        _isCleaningUp = true;
+        print('🔚 Cleanup flag set - preventing further background operations');
+        
+        // IMMEDIATELY cancel all timers to prevent any background callbacks
+        print('🔚 Immediately cancelling all background timers...');
+        _autoScanTimer?.cancel();
+        _autoScanTimer = null;
+        _ptzMovementTimer?.cancel();
+        _ptzMovementTimer = null;
+        _autoScanEnabled = false; // Disable auto-scan completely
+        print('🔚 All timers cancelled and auto-scan disabled');
+        
         // Show success message
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
@@ -1610,82 +1635,67 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> with WidgetsBinding
         // Force aggressive memory cleanup
         await Future.delayed(const Duration(milliseconds: 100));
         
-        // Clear any cached images from the image cache
+        // Clear any cached images from the image cache with extra safety
         try {
+          print('🔚 Starting image cache clearing...');
+          
+          // Clear in stages to be more gentle
           imageCache.clear();
+          print('🔚 Image cache.clear() completed');
+          
+          await Future.delayed(const Duration(milliseconds: 50));
+          
           imageCache.clearLiveImages();
-          print('🔚 Image cache cleared');
+          print('🔚 Image cache.clearLiveImages() completed');
+          
+          await Future.delayed(const Duration(milliseconds: 50));
+          
+          print('🔚 Image cache clearing finished successfully');
         } catch (e) {
-          print('Error clearing image cache: $e');
+          print('❌ Error clearing image cache: $e');
+          // Continue anyway - don't let image cache clearing block navigation
         }
         
+        print('🔚 Starting additional cleanup delay...');
         // Additional delay for native buffer cleanup
         await Future.delayed(const Duration(milliseconds: 300));
+        print('🔚 Additional cleanup delay completed');
 
-        // Use pushReplacement to prevent going back to RTSP screen
-        // This indicates that the analysis session is complete
+        print('🔚 Checking navigation conditions...');
+        print('🔚   mounted: $mounted');
+        print('🔚   _isNavigating: $_isNavigating');
+        print('🔚   _isCleaningUp: $_isCleaningUp');
+        
+        // Navigate to loading buffer screen first for better UX
         if (mounted && !_isNavigating) {
+          print('🔚 Navigation conditions met - showing loading buffer screen');
           _isNavigating = true; // prevent further setState during navigation
           
-          // Final safety check - ensure all timers are cancelled before navigation
-          _autoScanTimer?.cancel();
-          _autoScanTimer = null;
-          _ptzMovementTimer?.cancel();
-          _ptzMovementTimer = null;
-          
-          // Remove lifecycle observer immediately to prevent any further callbacks
+          // Navigate to loading buffer screen immediately
           try {
-            WidgetsBinding.instance.removeObserver(this);
-          } catch (e) {
-            print('Error removing lifecycle observer: $e');
-          }
-          
-          // Add a final delay to ensure all native cleanup is complete
-          print('🔚 Final delay before navigation to ensure stability...');
-          await Future.delayed(const Duration(milliseconds: 1000));
-          
-          // Final mounted check before navigation
-          if (!mounted) {
-            print('❌ Widget disposed during final delay, aborting navigation');
-            return;
-          }
-          
-          try {
-            print('🔚 Navigating to ReportDetailScreen...');
             Navigator.pushReplacement(
               context,
               MaterialPageRoute(
-                builder: (context) => ReportDetailScreen(
-                  report: report,
-                  fromAnalysis: true, // Indicate this came from analysis
+                builder: (context) => LoadingBufferScreen(
+                  title: 'Preparing Report',
+                  message: 'Finalizing your analysis results',
+                  onComplete: () async {
+                    // Perform cleanup in background while showing loading screen
+                    await _performBackgroundCleanupAndNavigate(report);
+                  },
                 ),
               ),
             );
           } catch (e) {
-            print('❌ Navigation error: $e');
-            // Fallback: try regular navigation if pushReplacement fails
-            try {
-              Navigator.push(
-                context,
-                MaterialPageRoute(
-                  builder: (context) => ReportDetailScreen(
-                    report: report,
-                    fromAnalysis: true,
-                  ),
-                ),
-              );
-            } catch (e2) {
-              print('❌ Fallback navigation also failed: $e2');
-              // Show error to user
-              ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(
-                  content: Text('Navigation error. Report saved: ${report.id}'),
-                  backgroundColor: Colors.orange,
-                  duration: const Duration(seconds: 5),
-                ),
-              );
-            }
+            print('❌ Loading screen navigation error: $e');
+            // Fallback to direct navigation if loading screen fails
+            await _performBackgroundCleanupAndNavigate(report);
           }
+        } else {
+          print('❌ Navigation conditions NOT met:');
+          print('❌   mounted: $mounted');
+          print('❌   _isNavigating: $_isNavigating');  
+          print('❌ Navigation aborted - report saved but not navigating');
         }
       }
     } catch (e) {
@@ -1841,8 +1851,8 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> with WidgetsBinding
   void _addTestDetection() async {
     print('_addTestDetection called');
     final random = DateTime.now().millisecondsSinceEpoch % 100;
-    final damageTypes = ['Crack', 'Deformation', 'Rust', 'Scaling'];
-    final damageType = damageTypes[random % 4];
+    final damageTypes = ['Crack', 'Deformation', 'Corrosion'];
+    final damageType = damageTypes[random % 3];
     final confidence = 0.6 + (random % 40) / 100;
     
     // Create a sample image for testing Firebase Storage
@@ -1928,13 +1938,138 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> with WidgetsBinding
     }
   }
 
+  /// Perform background cleanup and navigate to report detail screen
+  Future<void> _performBackgroundCleanupAndNavigate(DetectionReport report) async {
+    try {
+      print('🔚 Starting background cleanup process...');
+      
+      // Final safety check - ensure all timers are cancelled before navigation
+      _autoScanTimer?.cancel();
+      _autoScanTimer = null;
+      _ptzMovementTimer?.cancel();
+      _ptzMovementTimer = null;
+      
+      // Remove lifecycle observer immediately to prevent any further callbacks
+      try {
+        WidgetsBinding.instance.removeObserver(this);
+      } catch (e) {
+        print('Error removing lifecycle observer: $e');
+      }
+      
+      // Perform intensive cleanup operations
+      await Future.delayed(const Duration(milliseconds: 500));
+      
+      // VLC cleanup in background
+      if (_vlcViewController != null) {
+        try {
+          print('🔚 Stopping VLC player completely...');
+          
+          // Stop playback first
+          if (_vlcViewController!.value.isPlaying) {
+            await _vlcViewController!.stop();
+            print('🔚 VLC stopped');
+          }
+          
+          // Clear any video surface/texture to free video buffers
+          try {
+            await _vlcViewController!.setVideoAspectRatio('');
+            await _vlcViewController!.setVideoScale(0.0);
+          } catch (e) {
+            print('Error clearing VLC video settings: $e');
+          }
+          
+          // Wait for VLC to fully stop and release video buffers
+          await Future.delayed(const Duration(milliseconds: 300));
+          
+          // Dispose the controller
+          await _vlcViewController!.dispose();
+          _vlcViewController = null;
+          print('🔚 VLC disposed');
+          
+        } catch (e) {
+          print('Error disposing VLC controller: $e');
+          _vlcViewController = null;
+        }
+      }
+      
+      // Memory cleanup
+      _detectionHistory.clear();
+      _currentDetections.clear();
+      _lastAnalysisResult = null;
+      
+      // Clear image cache
+      try {
+        imageCache.clear();
+        imageCache.clearLiveImages();
+      } catch (e) {
+        print('❌ Error clearing image cache: $e');
+      }
+      
+      // Final delay for stability
+      await Future.delayed(const Duration(milliseconds: 500));
+      
+      print('🔚 Background cleanup completed, navigating to report...');
+      
+      // Navigate to report detail screen
+      if (mounted) {
+        try {
+          Navigator.pushReplacement(
+            context,
+            MaterialPageRoute(
+              builder: (context) => ReportDetailScreen(
+                report: report,
+                fromAnalysis: true,
+              ),
+            ),
+          );
+        } catch (e) {
+          print('❌ Final navigation error: $e');
+          // Show error to user if navigation fails
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('Navigation error. Report saved: ${report.id}'),
+              backgroundColor: Colors.orange,
+              duration: const Duration(seconds: 5),
+            ),
+          );
+        }
+      }
+      
+    } catch (e) {
+      print('❌ Background cleanup error: $e');
+      // Even if cleanup fails, try to navigate to report
+      if (mounted) {
+        try {
+          Navigator.pushReplacement(
+            context,
+            MaterialPageRoute(
+              builder: (context) => ReportDetailScreen(
+                report: report,
+                fromAnalysis: true,
+              ),
+            ),
+          );
+        } catch (navError) {
+          print('❌ Emergency navigation also failed: $navError');
+        }
+      }
+    }
+  }
+
   @override
   void dispose() {
+    print('🔚 RTSP Screen dispose() called - cleaning up without setState calls');
+    
     // Remove lifecycle observer
     WidgetsBinding.instance.removeObserver(this);
     
-    _stopAutoScan();
-    _stopPTZMovement(); // Stop PTZ movement
+    // Cancel timers directly without calling _stopAutoScan() to avoid setState on disposed widget
+    _autoScanTimer?.cancel();
+    _autoScanTimer = null;
+    _ptzMovementTimer?.cancel();
+    _ptzMovementTimer = null;
+    
+    print('🔚 Timers cancelled in dispose() without setState calls');
     
     try {
       _vlcViewController?.dispose();
