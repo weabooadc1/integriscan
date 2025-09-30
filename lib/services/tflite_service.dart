@@ -10,9 +10,10 @@ class TFLiteService {
   static List<String>? _labels;
   static bool _isInitialized = false;
   static bool _mockMode = false; // Add mock mode for debugging
+  static bool _isQuantized = false; // Track model type
 
-  // Model configuration
-  static const String modelPath = 'assets/models/RealDamageDetection.tflite';
+  // Model configuration - UPDATE THIS PATH FOR YOUR FLOAT32 MODEL
+  static const String modelPath = 'assets/models/RealDamageDetection32.tflite'; // Change to float32 model path
   static const String labelsPath = 'assets/models/labels.txt';
   static int inputSize = 640; // Dynamic input size - will be updated from model
 
@@ -55,7 +56,7 @@ class TFLiteService {
         throw Exception('Model loading failed: $e');
       }
       
-      // Print model input/output details
+      // Print model input/output details and detect model type
       try {
         final inputTensor = _interpreter!.getInputTensors().first;
         final outputTensor = _interpreter!.getOutputTensors().first;
@@ -63,6 +64,24 @@ class TFLiteService {
         print('📊 Input tensor type: ${inputTensor.type}');
         print('📊 Output tensor shape: ${outputTensor.shape}');
         print('📊 Output tensor type: ${outputTensor.type}');
+        
+        // Detect if model is quantized or float using explicit tensor types
+        try {
+          // The tflite_flutter package exposes underlying TfLiteType enums as .value
+          final inputTypeVal = inputTensor.type.value;
+          final outputTypeVal = outputTensor.type.value;
+          _isQuantized = (inputTypeVal == TfLiteType.kTfLiteUInt8) ||
+                         (inputTypeVal == TfLiteType.kTfLiteInt8) ||
+                         (outputTypeVal == TfLiteType.kTfLiteUInt8) ||
+                         (outputTypeVal == TfLiteType.kTfLiteInt8);
+        } catch (e) {
+          // Fallback to older string-based heuristic if direct comparison fails
+          _isQuantized = inputTensor.type.toString().contains('uint8') ||
+                        inputTensor.type.toString().contains('int8');
+        }
+        print('🔧 Model type detected: ${_isQuantized ? "Quantized (uint8/int8)" : "Float32"}');
+        // Helpful debug: print structured model info for quick verification
+        print('🔎 Model info: ${getModelInfo()}');
         
         // Update input size from model
         if (inputTensor.shape.length >= 3) {
@@ -74,6 +93,8 @@ class TFLiteService {
         }
       } catch (e) {
         print('⚠️ Warning: Could not read tensor info: $e');
+        // Default to float32 if detection fails
+        _isQuantized = false;
       }
       
       // Load labels if available
@@ -90,7 +111,7 @@ class TFLiteService {
 
       _isInitialized = true;
       print('🎉 TFLite model initialized successfully!');
-      print('📈 Ready for inference!');
+      print('📈 Ready for inference with ${_isQuantized ? "quantized" : "float32"} model!');
       return true;
     } catch (e) {
       print('❌ CRITICAL: Failed to initialize TFLite model!');
@@ -165,16 +186,19 @@ class TFLiteService {
     }
 
     try {
-      print('🔍 Running inference on quantized uint8 model with ${imageBytes.length} bytes');
+      print('🔍 Running inference on ${_isQuantized ? "quantized uint8" : "float32"} model with ${imageBytes.length} bytes');
       
-      // Decode and preprocess the image for uint8 model
-      final processedImage = _preprocessImage(imageBytes);
+      // Preprocess image based on model type
+      final processedImage = _isQuantized 
+          ? _preprocessImageQuantized(imageBytes)
+          : _preprocessImageFloat32(imageBytes);
+      
       if (processedImage == null) {
         print('❌ Image preprocessing failed');
         return null;
       }
       
-      print('✅ Image preprocessed successfully for uint8 model');
+      print('✅ Image preprocessed successfully for ${_isQuantized ? "quantized" : "float32"} model');
 
       // Save the sample image to device storage
       await _saveSampleImage(imageBytes);
@@ -201,55 +225,37 @@ class TFLiteService {
         print('⚠️ Could not print input details: $e');
       }
 
-      // Create output tensor - for quantized model, output is also uint8
+      // Create output tensor
       final outputSize = outputTensorShape.reduce((a, b) => a * b);
-      final output = List.filled(outputSize, 0).reshape(outputTensorShape);
+      final output = _isQuantized 
+          ? List.filled(outputSize, 0).reshape(outputTensorShape)
+          : List.filled(outputSize, 0.0).reshape(outputTensorShape);
 
-      print('🔄 Running quantized model inference...');
+      print('🔄 Running ${_isQuantized ? "quantized" : "float32"} model inference...');
+      
       // Run inference
-      _interpreter!.run(input, output);
+      _interpreter!.run(processedImage, output);
       
-      // Process quantized output - convert uint8 back to normalized values
-      List<double> flatOutput;
-      if (output is List<List<List>>) {
-        // Handle 3D output [1, 7, 8400] - YOLO format
-        // Convert uint8 output to double and normalize if needed
-        List<List<double>> normalizedOutput = [];
-        for (var batch in output) {
-          List<double> normalizedBatch = [];
-          for (var item in batch) {
-            // Convert uint8 values to double
-            normalizedBatch.addAll(item.map<double>((val) => (val as num).toDouble()));
-          }
-          normalizedOutput.add(normalizedBatch);
-        }
-        flatOutput = normalizedOutput.expand((row) => row).toList();
-        print('✅ Quantized inference completed. YOLO output shape: [${output.length}, ${output[0].length}, ${output[0][0].length}]');
-      } else if (output is List<List>) {
-        // Handle 2D output - convert uint8 to double
-        flatOutput = output[0].map<double>((val) => val is int ? val.toDouble() : val).toList();
-        print('✅ Quantized inference completed. 2D output length: ${flatOutput.length}');
-      } else {
-        // Handle 1D output - convert uint8 to double
-        flatOutput = output.map<double>((val) => val is int ? val.toDouble() : val).toList();
-        print('✅ Quantized inference completed. 1D output length: ${flatOutput.length}');
-      }
+      // Process output based on model type
+      List<double> flatOutput = _isQuantized 
+          ? _processQuantizedOutput(output, outputTensorShape)
+          : _processFloat32Output(output, outputTensorShape);
       
-      print('Raw quantized output sample (first 10 values): ${flatOutput.take(10).toList()}');
+      print('Raw output sample (first 10 values): ${flatOutput.take(10).toList()}');
 
       // Process results
       final results = _processResults(flatOutput, outputTensorShape);
       print('📊 Processed results: $results');
       return results;
     } catch (e) {
-      print('❌ Quantized inference failed: $e');
+      print('❌ Inference failed: $e');
       print('❌ Error type: ${e.runtimeType}');
       return null;
     }
   }
 
-  /// Preprocess image for the quantized uint8 model
-  static List<List<List<List<int>>>>? _preprocessImage(Uint8List imageBytes) {
+  /// Preprocess image for quantized uint8 model
+  static List<List<List<List<int>>>>? _preprocessImageQuantized(Uint8List imageBytes) {
     try {
       print('Starting image preprocessing for quantized uint8 model...');
       
@@ -282,12 +288,110 @@ class TFLiteService {
         imageMatrix.add(row);
       }
 
-      print('Image preprocessing completed - using uint8 values (0-255)');
+      print('Quantized preprocessing completed - using uint8 values (0-255)');
       return [imageMatrix];
     } catch (e) {
-      print('Image preprocessing failed: $e');
+      print('Quantized image preprocessing failed: $e');
       return null;
     }
+  }
+
+  /// Preprocess image for float32 model
+  static List<List<List<List<double>>>>? _preprocessImageFloat32(Uint8List imageBytes) {
+    try {
+      print('Starting image preprocessing for float32 model...');
+      
+      img.Image? image = img.decodeImage(imageBytes);
+      if (image == null) {
+        print('Failed to decode image');
+        return null;
+      }
+      
+      print('Original image size: ${image.width}x${image.height}');
+      img.Image resized = img.copyResize(image, width: inputSize, height: inputSize);
+      
+      // Convert to normalized float32 values (0.0-1.0)
+      List<List<List<double>>> imageMatrix = [];
+      for (int y = 0; y < inputSize; y++) {
+        List<List<double>> row = [];
+        for (int x = 0; x < inputSize; x++) {
+          final pixel = resized.getPixel(x, y);
+          List<double> pixelValues = [
+            img.getRed(pixel) / 255.0,    // Normalize to 0.0-1.0
+            img.getGreen(pixel) / 255.0,  // Normalize to 0.0-1.0
+            img.getBlue(pixel) / 255.0,   // Normalize to 0.0-1.0
+          ];
+          row.add(pixelValues);
+        }
+        imageMatrix.add(row);
+      }
+
+      print('Float32 preprocessing completed - using normalized values (0.0-1.0)');
+      return [imageMatrix];
+    } catch (e) {
+      print('Float32 image preprocessing failed: $e');
+      return null;
+    }
+  }
+
+  /// Process quantized model output
+  static List<double> _processQuantizedOutput(dynamic output, List<int> outputShape) {
+    print('Processing quantized model output...');
+    
+    List<double> flatOutput;
+    if (output is List<List<List>>) {
+      // Handle 3D output [1, 7, 8400] - YOLO format
+      List<List<double>> normalizedOutput = [];
+      for (var batch in output) {
+        List<double> normalizedBatch = [];
+        for (var item in batch) {
+          normalizedBatch.addAll(item.map<double>((val) => (val as num).toDouble()));
+        }
+        normalizedOutput.add(normalizedBatch);
+      }
+      flatOutput = normalizedOutput.expand((row) => row).toList();
+      print('✅ Quantized inference completed. YOLO output shape: [${output.length}, ${output[0].length}, ${output[0][0].length}]');
+    } else if (output is List<List>) {
+      // Handle 2D output
+      flatOutput = output[0].map<double>((val) => val is int ? val.toDouble() : val).toList();
+      print('✅ Quantized inference completed. 2D output length: ${flatOutput.length}');
+    } else {
+      // Handle 1D output
+      flatOutput = output.map<double>((val) => val is int ? val.toDouble() : val).toList();
+      print('✅ Quantized inference completed. 1D output length: ${flatOutput.length}');
+    }
+    
+    return flatOutput;
+  }
+
+  /// Process float32 model output
+  static List<double> _processFloat32Output(dynamic output, List<int> outputShape) {
+    print('Processing float32 model output...');
+    
+    List<double> flatOutput;
+    if (output is List<List<List>>) {
+      // Handle 3D output [1, 7, 8400] - YOLO format
+      List<List<double>> processedOutput = [];
+      for (var batch in output) {
+        List<double> batchData = [];
+        for (var item in batch) {
+          batchData.addAll(item.map<double>((val) => (val as num).toDouble()));
+        }
+        processedOutput.add(batchData);
+      }
+      flatOutput = processedOutput.expand((row) => row).toList();
+      print('✅ Float32 inference completed. YOLO output shape: [${output.length}, ${output[0].length}, ${output[0][0].length}]');
+    } else if (output is List<List>) {
+      // Handle 2D output
+      flatOutput = output[0].map<double>((val) => (val as num).toDouble()).toList();
+      print('✅ Float32 inference completed. 2D output length: ${flatOutput.length}');
+    } else {
+      // Handle 1D output
+      flatOutput = output.map<double>((val) => (val as num).toDouble()).toList();
+      print('✅ Float32 inference completed. 1D output length: ${flatOutput.length}');
+    }
+    
+    return flatOutput;
   }
 
   /// Save the sample image to the device storage
@@ -327,76 +431,69 @@ class TFLiteService {
 
   /// Process YOLO-style object detection results with quantized model output
   static Map<String, dynamic> _processYOLOResults(List<double> output, List<int> outputShape) {
-    print('Processing quantized YOLO results with shape: $outputShape');
-    
-    // For quantized models, you might need to dequantize the output
-    // Check if values are in uint8 range (0-255) and need normalization
+    // Use a dynamic prefix so logs and returned modelType reflect the actual loaded model
+    final prefix = _isQuantized ? 'Quantized YOLO' : 'Float32 YOLO';
+    final modelTypeName = _isQuantized ? 'Quantized YOLO' : 'Float32 YOLO';
+    print('Processing $modelTypeName results with shape: $outputShape');
+
+    // Inspect output range to decide if dequantization is necessary
     final maxValue = output.reduce((a, b) => a > b ? a : b);
     final minValue = output.reduce((a, b) => a < b ? a : b);
     print('Output value range: $minValue to $maxValue');
-    
-    // If output is in uint8 range, normalize for YOLO processing
+
     List<double> normalizedOutput = output;
-    if (maxValue > 10.0) { // Likely quantized values
-      print('Detected quantized output, applying normalization...');
+    if (maxValue > 10.0) {
+      // Heuristic: large max value implies quantized uint8 output
+      print('$prefix: Detected quantized output, applying normalization...');
       normalizedOutput = output.map((val) => val / 255.0).toList();
-      print('Normalized output range: ${normalizedOutput.reduce((a, b) => a < b ? a : b)} to ${normalizedOutput.reduce((a, b) => a > b ? a : b)}');
+      print('$prefix: Normalized output range: ${normalizedOutput.reduce((a, b) => a < b ? a : b)} to ${normalizedOutput.reduce((a, b) => a > b ? a : b)}');
     }
-    
-    // Continue with existing YOLO processing logic using normalizedOutput
+
     final numFeatures = outputShape[1]; // 7 features
     final numDetections = outputShape[2]; // 8400 possible detections
-    
+
     double maxConfidence = 0.0;
     int bestClass = 0;
     Map<String, double>? bestBoundingBox;
     List<Map<String, dynamic>> allDetections = [];
-    
-    // Determine number of classes (total features - 4 bbox coordinates)
+
     final numClasses = numFeatures - 4;
-    print('Quantized YOLO: Processing $numDetections detections with $numClasses classes');
-    
-    // Iterate through all detections using normalizedOutput
+    print('$prefix: Processing $numDetections detections with $numClasses classes');
+
     for (int detection = 0; detection < numDetections; detection++) {
       try {
-        // Extract bounding box coordinates (first 4 values)
-        var centerX = normalizedOutput[0 * numDetections + detection]; // x center
-        var centerY = normalizedOutput[1 * numDetections + detection]; // y center
-        var width = normalizedOutput[2 * numDetections + detection];   // width
-        var height = normalizedOutput[3 * numDetections + detection];  // height
-        
-        // NORMALIZE COORDINATES if they're in pixel space (common YOLO issue)
+        var centerX = normalizedOutput[0 * numDetections + detection];
+        var centerY = normalizedOutput[1 * numDetections + detection];
+        var width = normalizedOutput[2 * numDetections + detection];
+        var height = normalizedOutput[3 * numDetections + detection];
+
         if (centerX > 1.0 || centerY > 1.0 || width > 1.0 || height > 1.0) {
           centerX = centerX / inputSize;
           centerY = centerY / inputSize;
           width = width / inputSize;
           height = height / inputSize;
-          print('Quantized YOLO: Normalized coordinates for detection $detection - centerX: $centerX, width: $width');
+          print('$prefix: Normalized coordinates for detection $detection - centerX: $centerX, width: $width');
         }
-        
-        // Skip invalid bounding boxes
+
         if (centerX < 0 || centerY < 0 || width <= 0 || height <= 0) continue;
-        
-        // Skip oversized bounding boxes (larger than 80% of screen - likely false positives)
+
         if (width > 0.8 || height > 0.8) {
-          print('Quantized YOLO: Skipping oversized box - width: ${(width * 100).toInt()}%, height: ${(height * 100).toInt()}%');
+          print('$prefix: Skipping oversized box - width: ${(width * 100).toInt()}%, height: ${(height * 100).toInt()}%');
           continue;
         }
-        
-        // Apply reasonable size limits for damage detection (5% to 50% of screen)
+
         final originalWidth = width;
         final originalHeight = height;
         width = width.clamp(0.05, 0.5);
         height = height.clamp(0.05, 0.5);
-        
+
         if (originalWidth != width || originalHeight != height) {
-          print('Quantized YOLO: Adjusted box size from ${(originalWidth * 100).toInt()}%x${(originalHeight * 100).toInt()}% to ${(width * 100).toInt()}%x${(height * 100).toInt()}%');
+          print('$prefix: Adjusted box size from ${(originalWidth * 100).toInt()}%x${(originalHeight * 100).toInt()}% to ${(width * 100).toInt()}%x${(height * 100).toInt()}%');
         }
-        
-        // Find the class with highest confidence
+
         double detectionMaxConf = 0.0;
         int detectionBestClass = 0;
-        
+
         for (int cls = 0; cls < numClasses; cls++) {
           final classIndex = (4 + cls) * numDetections + detection;
           if (classIndex < normalizedOutput.length) {
@@ -407,17 +504,14 @@ class TFLiteService {
             }
           }
         }
-        
-        // Only consider detections above threshold
+
         if (detectionMaxConf > 0.3) {
-          // Convert center coordinates to top-left corner
           final x = (centerX - width / 2).clamp(0.0, 0.95);
           final y = (centerY - height / 2).clamp(0.0, 0.95);
-          
-          // Ensure bounding box stays within screen bounds
+
           final adjustedWidth = width.clamp(0.05, 1.0 - x);
           final adjustedHeight = height.clamp(0.05, 1.0 - y);
-          
+
           final boundingBox = {
             'x': x,
             'y': y,
@@ -426,20 +520,19 @@ class TFLiteService {
             'centerX': centerX,
             'centerY': centerY,
           };
-          
-          print('Quantized YOLO: Valid detection ${allDetections.length + 1} - Box: ${(x * 100).toInt()}%,${(y * 100).toInt()}% ${(adjustedWidth * 100).toInt()}%x${(adjustedHeight * 100).toInt()}% (conf: ${(detectionMaxConf * 100).toInt()}%)');
-          
-          final damageType = _labels != null && detectionBestClass < _labels!.length 
-              ? _labels![detectionBestClass] 
+
+          print('$prefix: Valid detection ${allDetections.length + 1} - Box: ${(x * 100).toInt()}%,${(y * 100).toInt()}% ${(adjustedWidth * 100).toInt()}%x${(adjustedHeight * 100).toInt()}% (conf: ${(detectionMaxConf * 100).toInt()}%)');
+
+          final damageType = _labels != null && detectionBestClass < _labels!.length
+              ? _labels![detectionBestClass]
               : 'Class $detectionBestClass';
-          
+
           allDetections.add({
             'label': damageType,
             'confidence': detectionMaxConf,
             'box': boundingBox,
           });
-          
-          // Track the best overall detection
+
           if (detectionMaxConf > maxConfidence) {
             maxConfidence = detectionMaxConf;
             bestClass = detectionBestClass;
@@ -451,25 +544,24 @@ class TFLiteService {
         continue;
       }
     }
-    
-    print('Quantized YOLO: Found ${allDetections.length} valid detections');
-    print('Quantized YOLO: Best detection - Class: $bestClass, Confidence: ${(maxConfidence * 100).toInt()}%');
+
+    print('$prefix: Found ${allDetections.length} valid detections');
+    print('$prefix: Best detection - Class: $bestClass, Confidence: ${(maxConfidence * 100).toInt()}%');
     if (bestBoundingBox != null) {
-      print('Quantized YOLO: Best bounding box: ${(bestBoundingBox['x']! * 100).toInt()}%,${(bestBoundingBox['y']! * 100).toInt()}% ${(bestBoundingBox['width']! * 100).toInt()}%x${(bestBoundingBox['height']! * 100).toInt()}%');
+      print('$prefix: Best bounding box: ${(bestBoundingBox['x']! * 100).toInt()}%,${(bestBoundingBox['y']! * 100).toInt()}% ${(bestBoundingBox['width']! * 100).toInt()}%x${(bestBoundingBox['height']! * 100).toInt()}%');
     }
-    
-    // Map class index to damage type
-    final damageType = _labels != null && bestClass < _labels!.length 
-        ? _labels![bestClass] 
+
+    final damageType = _labels != null && bestClass < _labels!.length
+        ? _labels![bestClass]
         : 'Class $bestClass';
     final isDamageDetected = maxConfidence > 0.3 && damageType != 'No Damage';
-    
+
     return {
       'isDamageDetected': isDamageDetected,
       'confidence': maxConfidence,
       'damageType': damageType,
       'timestamp': DateTime.now().millisecondsSinceEpoch,
-      'modelType': 'Quantized YOLO',
+      'modelType': modelTypeName,
       'boundingBox': bestBoundingBox,
       'detections': allDetections,
     };
@@ -544,6 +636,11 @@ class TFLiteService {
       'labelsCount': _labels?.length ?? 0,
       'labels': _labels ?? [],
       'interpreterAvailable': _interpreter != null,
+      'modelType': _isQuantized ? 'Quantized (int8/uint8)' : 'Float32',
+      'inputTensorType': _interpreter?.getInputTensors().first.type.toString(),
+      'outputTensorType': _interpreter?.getOutputTensors().first.type.toString(),
+      'inputShape': _interpreter?.getInputTensors().first.shape,
+      'outputShape': _interpreter?.getOutputTensors().first.shape,
     };
   }
 
