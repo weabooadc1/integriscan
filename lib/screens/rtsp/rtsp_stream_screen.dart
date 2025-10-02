@@ -648,7 +648,7 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> with WidgetsBinding
     if (mounted && !_isNavigating) {
       setState(() {
         _ptzSupported = true;
-        _ptzDebugMode = true; // Enable debug mode by default for testing
+        _ptzDebugMode = false; // Enable debug mode by default for testing
       });
     }
     
@@ -657,7 +657,7 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> with WidgetsBinding
     if (mounted && !_isNavigating) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('🔧 PTZ Debug Mode enabled for testing - Auto-scan ready!'),
+          content: Text('Auto-scan ready!'),
           backgroundColor: Colors.purple,
           duration: Duration(seconds: 3),
         ),
@@ -797,6 +797,25 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> with WidgetsBinding
   void _toggleAutoScan() {
     print('🔄 _toggleAutoScan() called - current state: $_autoScanEnabled');
     
+    // ADD: Check TFLite service state before starting
+    if (!_autoScanEnabled) {
+      final modelInfo = TFLiteService.getModelInfo();
+      print('🤖 TFLite Model Info before starting auto-scan: $modelInfo');
+      
+      if (modelInfo['isInitialized'] != true) {
+        print('❌ TFLite not initialized - reinitializing...');
+        _initializeTFLite();
+        
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('⚠️ AI model not ready - initializing...'),
+            backgroundColor: Colors.orange,
+          ),
+        );
+        return;
+      }
+    }
+    
     setState(() {
       _autoScanEnabled = !_autoScanEnabled;
     });
@@ -902,38 +921,95 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> with WidgetsBinding
       }
 
       final analysisResult = await _performSingleAnalysis();
-      print('📊 Analysis result: $analysisResult');
+      
+      // ADD: More detailed logging of analysis result
+      print('📊 DETAILED Analysis result: $analysisResult');
+      print('📊 Analysis result type: ${analysisResult.runtimeType}');
+      if (analysisResult != null) {
+        print('📊 isDamageDetected: ${analysisResult['isDamageDetected']}');
+        print('📊 damageType: ${analysisResult['damageType']}');
+        print('📊 confidence: ${analysisResult['confidence']}');
+      } else {
+        print('❌ Analysis result is NULL - this is the problem!');
+      }
 
       if (!_autoScanEnabled || !mounted) {
         print('❌ Auto-scan aborted after analysis');
         return;
       }
 
-      // State 2: Show Detection Results (5 seconds)
+      // State 2: Show Detection Results (5 seconds) - UPDATED FOR MULTIPLE DETECTIONS
       print('🎯 Auto-scan: Step 2 - Showing results for 5 seconds');
       if (mounted) {
         setState(() {
           _currentScanState = AutoScanState.showingResults;
           
-          if (analysisResult != null && analysisResult['isDamageDetected'] == true) {
-            // Show bounding boxes for damage detection
-            final detection = {
-              'label': analysisResult['damageType'] ?? 'Unknown',
-              'confidence': analysisResult['confidence'] ?? 0.0,
-              'box': {
-                'x': 0.3,
-                'y': 0.3,
-                'width': 0.4,
-                'height': 0.4,
+          if (analysisResult != null) {
+            // NEW: Handle multiple detections if available
+            if (analysisResult.containsKey('allDetections') && analysisResult['allDetections'] is List) {
+              final allDetections = analysisResult['allDetections'] as List;
+              print('🎯 Displaying ${allDetections.length} detections simultaneously');
+              
+              _currentDetections = [];
+              
+              for (int i = 0; i < allDetections.length; i++) {
+                final detection = allDetections[i];
+                
+                // Show ALL detections regardless of confidence level
+                final displayDetection = {
+                  'label': '${detection['damageType']} #${i + 1}',
+                  'confidence': detection['confidence'],
+                  'damageType': detection['damageType'], // Add damage type for color coding
+                  'box': detection['boundingBox'] ?? {
+                    'x': 0.2 + (i * 0.15), // Offset multiple boxes horizontally
+                    'y': 0.2 + (i * 0.1),  // Offset multiple boxes vertically
+                    'width': 0.25,
+                    'height': 0.2,
+                  }
+                };
+                _currentDetections.add(displayDetection);
               }
-            };
-            _currentDetections = [detection];
-            _showBoundingBoxes = true;
-            print('🎯 Showing bounding boxes for detection: ${detection['label']}');
+              
+              _showBoundingBoxes = _currentDetections.isNotEmpty;
+              print('🎯 Showing ${_currentDetections.length} bounding boxes for multiple detections');
+            }
+            // Handle single detection (existing logic)
+            else if (analysisResult['isDamageDetected'] == true) {
+              final detection = {
+                'label': analysisResult['damageType'] ?? 'Unknown',
+                'confidence': analysisResult['confidence'] ?? 0.0,
+                'damageType': analysisResult['damageType'] ?? 'Unknown', // Add damage type for color coding
+                'box': analysisResult['boundingBox'] ?? {
+                  'x': 0.3,
+                  'y': 0.3,
+                  'width': 0.4,
+                  'height': 0.4,
+                }
+              };
+              _currentDetections = [detection];
+              _showBoundingBoxes = true;
+              print('🎯 Showing single bounding box for detection: ${detection['label']}');
+            } else {
+              // Show "No Damage" indicator for completed analysis
+              final noDetection = {
+                'label': 'No Damage Detected',
+                'confidence': analysisResult['confidence'] ?? 0.0,
+                'damageType': 'No Damage', // Add damage type for color coding
+                'box': {
+                  'x': 0.4,
+                  'y': 0.4,
+                  'width': 0.2,
+                  'height': 0.2,
+                }
+              };
+              _currentDetections = [noDetection];
+              _showBoundingBoxes = true;
+              print('🎯 Showing "No Damage" indicator with confidence: ${analysisResult['confidence']}');
+            }
           } else {
             _currentDetections = [];
             _showBoundingBoxes = false;
-            print('🎯 No damage detected, hiding bounding boxes');
+            print('🎯 Analysis failed, hiding bounding boxes');
           }
         });
       }
@@ -1031,8 +1107,19 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> with WidgetsBinding
     try {
       print('🔍 Performing single analysis...');
       
-      // Small delay to ensure frame is ready
-      await Future.delayed(const Duration(milliseconds: 200));
+      // ADD: Check VLC controller state
+      if (_vlcViewController == null) {
+        print('❌ VLC controller is null');
+        return null;
+      }
+      
+      print('🔍 VLC controller state:');
+      print('  - isPlaying: ${_vlcViewController!.value.isPlaying}');
+      print('  - isInitialized: ${_vlcViewController!.value.isInitialized}');
+      print('  - hasError: ${_vlcViewController!.value.hasError}');
+      
+      // Small delay to ensure frame is ready (increased from 200ms to 500ms)
+      await Future.delayed(const Duration(milliseconds: 500));
       
       // Capture frame from VLC player
       print('📸 Attempting to capture frame from VLC widget');
@@ -1041,13 +1128,77 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> with WidgetsBinding
       if (frameBytes != null) {
         print('📸 Frame captured successfully: ${frameBytes.length} bytes');
         
+        // ADD: Save captured frame for debugging
+        try {
+          final directory = await getApplicationDocumentsDirectory();
+          final debugFile = File('${directory.path}/debug_frame_${DateTime.now().millisecondsSinceEpoch}.png');
+          await debugFile.writeAsBytes(frameBytes);
+          print('🔍 DEBUG: Frame saved to ${debugFile.path} for inspection');
+        } catch (e) {
+          print('Warning: Could not save debug frame: $e');
+        }
+        
         // Run AI inference
         print('🤖 Running AI inference on captured frame');
         final result = await TFLiteService.runInference(frameBytes);
         print('🤖 AI inference result: $result');
         
-        if (result != null && result['isDamageDetected'] != null) {
-          print('🤖 Analysis result: ${result['damageType']} (${(result['confidence'] * 100).toInt()}%)');
+        // ADD: More detailed result checking
+        if (result == null) {
+          print('❌ TFLiteService.runInference returned NULL');
+          
+          // Check if TFLite is properly initialized
+          final modelInfo = TFLiteService.getModelInfo();
+          print('🤖 Model info: $modelInfo');
+          
+          return null;
+        }
+        
+        print('🤖 Result validation:');
+        print('  - Has isDamageDetected key: ${result.containsKey('isDamageDetected')}');
+        print('  - isDamageDetected value: ${result['isDamageDetected']}');
+        print('  - Result keys: ${result.keys.toList()}');
+        
+        // NEW: Enhanced handling for multiple detections
+        if (result.containsKey('allDetections') && result['allDetections'] is List) {
+          final allDetections = result['allDetections'] as List;
+          print('🤖 Multiple detections found: ${allDetections.length}');
+          
+          // Process each detection
+          for (int i = 0; i < allDetections.length; i++) {
+            final detection = allDetections[i];
+            print('🤖 Detection $i: ${detection['damageType']} (${(detection['confidence'] * 100).toInt()}%)');
+          }
+          
+          // Update statistics for multiple detections
+          if (mounted) {
+            setState(() {
+              _totalFramesAnalyzed++;
+              
+              // Count how many are actual damage (excluding only "No Damage" results)
+              final validDetections = allDetections.where((det) => 
+                det['damageType'] != 'No Damage'
+              ).toList();
+              
+              // Save ALL detections to history regardless of confidence
+              for (var detection in allDetections) {
+                print('💾 Saving ALL detections to history: ${detection['damageType']} (${(detection['confidence'] * 100).toInt()}%)');
+                _saveDetectionToHistory(detection, frameBytes);
+              }
+              
+              if (validDetections.isNotEmpty) {
+                _damagesDetected += validDetections.length;
+              }
+              
+              _lastAnalysisResult = result; // Store the latest result
+            });
+          }
+          
+          return result;
+        }
+        // Existing single detection handling
+        else if (result['isDamageDetected'] != null) {
+          print('🤖 Single detection analysis: ${result['damageType']} (${(result['confidence'] * 100).toInt()}%)');
           
           // Update statistics
           if (mounted) {
@@ -1056,11 +1207,9 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> with WidgetsBinding
               if (result['isDamageDetected'] == true) {
                 _damagesDetected++;
                 
-                // Save to detection history if damage found
-                if (result['confidence'] > 0.5) {
-                  print('💾 Saving detection to history');
-                  _saveDetectionToHistory(result, frameBytes);
-                }
+                // Save ALL detections to history regardless of confidence
+                print('💾 Saving ALL detections to history: ${result['damageType']} (${(result['confidence'] * 100).toInt()}%)');
+                _saveDetectionToHistory(result, frameBytes);
               }
               _lastAnalysisResult = result; // Store the latest result
             });
@@ -1068,15 +1217,18 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> with WidgetsBinding
           
           return result;
         } else {
-          print('🤖 Analysis returned null or invalid result: $result');
+          print('🤖 Analysis returned result without isDamageDetected field: $result');
           return null;
         }
       } else {
         print('❌ Frame capture failed - returned null');
+        print('❌ Widget key current context: ${_playerKey.currentContext}');
+        print('❌ Widget key current widget: ${_playerKey.currentWidget}');
         return null;
       }
     } catch (e) {
       print('❌ Analysis error: $e');
+      print('❌ Stack trace: ${StackTrace.current}');
       return null;
     }
   }
@@ -1328,34 +1480,9 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> with WidgetsBinding
     _toggleAutoScan();
   }
   
-  /// Toggle PTZ debug mode for testing
-  void _togglePTZDebugMode() {
-    setState(() {
-      _ptzDebugMode = !_ptzDebugMode;
-    });
-    
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(_ptzDebugMode 
-            ? 'PTZ Debug Mode enabled - UI controls now visible for testing'
-            : 'PTZ Debug Mode disabled'),
-        backgroundColor: _ptzDebugMode ? Colors.purple : Colors.orange,
-        duration: const Duration(seconds: 3),
-      ),
-    );
-  }
+
   
-  /// Stop PTZ movement
-  void _stopPTZMovement() {
-    _ptzMovementTimer?.cancel();
-    _ptzMovementTimer = null;
-    
-    if (mounted) {
-      setState(() {
-        _isMovingCamera = false;
-      });
-    }
-  }
+
 
   /// Perform camera calibration by panning left and right
   Future<void> _performCameraCalibration() async {
@@ -1671,25 +1798,54 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> with WidgetsBinding
           print('🔚 Navigation conditions met - showing loading buffer screen');
           _isNavigating = true; // prevent further setState during navigation
           
-          // Navigate to loading buffer screen immediately
+          // Navigate to loading buffer screen immediately with timeout protection
+          print('🔄 Starting navigation to loading screen at ${DateTime.now()}');
+          print('🔄 Report details: ID=${report.id}, Detections=${report.detections.length}');
           try {
-            Navigator.pushReplacement(
+            await Navigator.pushReplacement(
               context,
               MaterialPageRoute(
                 builder: (context) => LoadingBufferScreen(
                   title: 'Preparing Report',
                   message: 'Finalizing your analysis results',
+                  duration: const Duration(seconds: 12), // Reduced timeout
+                  navigationData: {
+                    'report': report,
+                    'fromAnalysis': true,
+                    'screenWidget': ReportDetailScreen(
+                      report: report,
+                      fromAnalysis: true,
+                    ),
+                  },
                   onComplete: () async {
-                    // Perform cleanup in background while showing loading screen
-                    await _performBackgroundCleanupAndNavigate(report);
+                    print('🔄 LoadingBufferScreen onComplete called at ${DateTime.now()}');
+                    try {
+                      // Perform cleanup and return success/failure
+                      final success = await _performBackgroundCleanupAndNavigate(report);
+                      print('✅ Background cleanup completed with result: $success');
+                      return success;
+                    } catch (e) {
+                      print('❌ Background cleanup failed: $e');
+                      return false; // Return failure
+                    }
                   },
                 ),
               ),
             );
+            print('✅ Loading screen navigation completed successfully');
           } catch (e) {
             print('❌ Loading screen navigation error: $e');
             // Fallback to direct navigation if loading screen fails
-            await _performBackgroundCleanupAndNavigate(report);
+            print('🔄 Falling back to direct navigation');
+            await Navigator.pushReplacement(
+              context,
+              MaterialPageRoute(
+                builder: (context) => ReportDetailScreen(
+                  report: report,
+                  fromAnalysis: true,
+                ),
+              ),
+            );
           }
         } else {
           print('❌ Navigation conditions NOT met:');
@@ -1848,6 +2004,62 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> with WidgetsBinding
     }
   }
 
+  // ADD: Manual test method for AI analysis
+  Future<void> _testManualAnalysis() async {
+    print('🧪 Manual AI analysis test started');
+    
+    if (!_isConnected) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Connect to RTSP stream first'),
+          backgroundColor: Colors.red,
+        ),
+      );
+      return;
+    }
+    
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('🧪 Testing AI analysis manually...'),
+        backgroundColor: Colors.blue,
+      ),
+    );
+    
+    try {
+      final result = await _performSingleAnalysis();
+      
+      if (mounted) {
+        if (result != null) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('✅ AI Test: ${result['damageType']} (${(result['confidence'] * 100).toInt()}%) - Damage: ${result['isDamageDetected']}'),
+              backgroundColor: result['isDamageDetected'] == true ? Colors.red : Colors.green,
+              duration: const Duration(seconds: 5),
+            ),
+          );
+        } else {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('❌ AI Test failed - check console for details'),
+              backgroundColor: Colors.red,
+              duration: Duration(seconds: 3),
+            ),
+          );
+        }
+      }
+    } catch (e) {
+      print('❌ Manual analysis test error: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('❌ Analysis error: ${e.toString().substring(0, 50)}...'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
+  }
+
   void _addTestDetection() async {
     print('_addTestDetection called');
     final random = DateTime.now().millisecondsSinceEpoch % 100;
@@ -1938,8 +2150,9 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> with WidgetsBinding
     }
   }
 
-  /// Perform background cleanup and navigate to report detail screen
-  Future<void> _performBackgroundCleanupAndNavigate(DetectionReport report) async {
+
+
+  Future<bool> _performBackgroundCleanupAndNavigate(DetectionReport report) async {
     try {
       print('🔚 Starting background cleanup process...');
       
@@ -2008,53 +2221,18 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> with WidgetsBinding
       // Final delay for stability
       await Future.delayed(const Duration(milliseconds: 500));
       
-      print('🔚 Background cleanup completed, navigating to report...');
+      final cleanupTime = DateTime.now();
+      print('🔚 Background cleanup completed successfully at $cleanupTime');
       
-      // Navigate to report detail screen
-      if (mounted) {
-        try {
-          Navigator.pushReplacement(
-            context,
-            MaterialPageRoute(
-              builder: (context) => ReportDetailScreen(
-                report: report,
-                fromAnalysis: true,
-              ),
-            ),
-          );
-        } catch (e) {
-          print('❌ Final navigation error: $e');
-          // Show error to user if navigation fails
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text('Navigation error. Report saved: ${report.id}'),
-              backgroundColor: Colors.orange,
-              duration: const Duration(seconds: 5),
-            ),
-          );
-        }
-      }
+      return true; // Return success - navigation will be handled by caller
       
     } catch (e) {
       print('❌ Background cleanup error: $e');
-      // Even if cleanup fails, try to navigate to report
-      if (mounted) {
-        try {
-          Navigator.pushReplacement(
-            context,
-            MaterialPageRoute(
-              builder: (context) => ReportDetailScreen(
-                report: report,
-                fromAnalysis: true,
-              ),
-            ),
-          );
-        } catch (navError) {
-          print('❌ Emergency navigation also failed: $navError');
-        }
-      }
+      return false; // Return failure status
     }
   }
+
+
 
   @override
   void dispose() {
@@ -2694,18 +2872,9 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> with WidgetsBinding
                         const SizedBox(height: 16),
                       ],
                       
-                      // Test Detection Button (for testing)
+                      // Clear History and Generate Report Buttons
                       Row(
                         children: [
-                          Expanded(
-                            child: _buildControlCard(
-                              title: 'Add Test Detection',
-                              icon: Icons.bug_report,
-                              color: Colors.indigo,
-                              onTap: _addTestDetection,
-                            ),
-                          ),
-                          const SizedBox(width: 16),
                           Expanded(
                             child: _buildControlCard(
                               title: 'Clear History',
@@ -2714,182 +2883,42 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> with WidgetsBinding
                               onTap: _clearDetectionHistory,
                             ),
                           ),
-                        ],
-                      ),
-                      
-                      const SizedBox(height: 16),
-                      
-                      // PTZ Debug Toggle (for testing without PTZ camera)
-                      Row(
-                        children: [
-                          Expanded(
-                            child: _buildControlCard(
-                              title: _ptzDebugMode ? 'Disable PTZ Debug' : 'Enable PTZ Debug',
-                              icon: _ptzDebugMode ? Icons.camera_alt_outlined : Icons.camera_alt,
-                              color: _ptzDebugMode ? Colors.red : Colors.purple,
-                              onTap: _togglePTZDebugMode,
-                            ),
-                          ),
                           const SizedBox(width: 16),
                           Expanded(
-                            child: Container(
-                              decoration: BoxDecoration(
-                                color: Colors.grey[100],
-                                borderRadius: BorderRadius.circular(16),
-                              ),
-                              padding: const EdgeInsets.all(20),
-                              child: Column(
-                                children: [
-                                  Icon(
-                                    Icons.info_outline,
-                                    color: Colors.grey[400],
-                                    size: 24,
-                                  ),
-                                  const SizedBox(height: 8),
-                                  Text(
-                                    'Debug Mode',
-                                    style: TextStyle(
-                                      fontSize: 14,
-                                      fontWeight: FontWeight.w600,
-                                      color: Colors.grey[600],
-                                    ),
-                                  ),
-                                  const SizedBox(height: 4),
-                                  Text(
-                                    'Enable to test PTZ UI without camera',
-                                    style: TextStyle(
-                                      fontSize: 10,
-                                      color: Colors.grey[500],
-                                    ),
-                                    textAlign: TextAlign.center,
-                                  ),
-                                ],
-                              ),
+                            child: _buildControlCard(
+                              title: 'Generate Report',
+                              icon: Icons.assignment,
+                              color: Colors.purple,
+                              onTap: _generateReport,
                             ),
                           ),
                         ],
                       ),
-                      
+                  
                       const SizedBox(height: 16),
                       
-                      // Performance Settings
-                      Container(
-                        decoration: BoxDecoration(
-                          color: Colors.white,
-                          borderRadius: BorderRadius.circular(16),
-                          boxShadow: [
-                            BoxShadow(
-                              color: Colors.black.withOpacity(0.05),
-                              blurRadius: 10,
-                              offset: const Offset(0, 2),
-                            ),
-                          ],
-                        ),
-                        child: Padding(
-                          padding: const EdgeInsets.all(16),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Row(
-                                children: [
-                                  Icon(
-                                    Icons.tune,
-                                    color: Colors.grey[600],
-                                    size: 16,
-                                  ),
-                                  const SizedBox(width: 8),
-                                  Text(
-                                    'Performance Settings',
-                                    style: TextStyle(
-                                      fontSize: 16,
-                                      fontWeight: FontWeight.w600,
-                                      color: Colors.grey[700],
-                                    ),
-                                  ),
-                                ],
-                              ),
-                              const SizedBox(height: 16),
-                              Row(
-                                children: [
-                                  Expanded(
-                                    child: Column(
-                                      crossAxisAlignment: CrossAxisAlignment.start,
-                                      children: [
-                                        Text(
-                                          'Analysis Interval',
-                                          style: TextStyle(
-                                            fontSize: 14,
-                                            fontWeight: FontWeight.w500,
-                                            color: Colors.grey[700],
-                                          ),
-                                        ),
-                                        const SizedBox(height: 8),
-                                        DropdownButton<int>(
-                                          value: _analysisIntervalSeconds,
-                                          isExpanded: true,
-                                          underline: Container(),
-                                          items: _availableIntervals.map((interval) {
-                                            return DropdownMenuItem<int>(
-                                              value: interval,
-                                              child: Text(
-                                                '$interval seconds',
-                                                style: const TextStyle(fontSize: 14),
-                                              ),
-                                            );
-                                          }).toList(),
-                                          onChanged: (value) {
-                                            if (value != null) {
-                                              setState(() {
-                                                _analysisIntervalSeconds = value;
-                                              });
-                                              
-                                              // Restart auto-scan with new interval if enabled
-                                              if (_autoScanEnabled) {
-                                                _stopAutoScan();
-                                                _startAutoScan();
-                                              }
-                                              
-                                              ScaffoldMessenger.of(context).showSnackBar(
-                                                SnackBar(
-                                                  content: Text('Analysis interval updated to $value seconds'),
-                                                  backgroundColor: Colors.blue,
-                                                  duration: const Duration(seconds: 2),
-                                                ),
-                                              );
-                                            }
-                                          },
-                                        ),
-                                      ],
-                                    ),
-                                  ),
-                                ],
-                              ),
-                              const SizedBox(height: 8),
-                              Text(
-                                'Lower intervals = More frequent analysis but higher CPU usage\nHigher intervals = Better performance and battery life',
-                                style: TextStyle(
-                                  fontSize: 11,
-                                  color: Colors.grey[500],
-                                  height: 1.3,
-                                ),
-                              ),
-                            ],
+                      // ADD: Manual Test Buttons
+                     /* Row(
+                        children: [
+                          Expanded(
+                            ///child: _buildControlCard(
+                              title: 'Test AI Analysis',
+                              //icon: Icons.psychology,
+                              //color: Colors.cyan,
+                             /// onTap: _testManualAnalysis,
+                            ////),
                           ),
-                        ),
-                      ),
-                      
-                      const SizedBox(height: 16),
-                      
-                      // Generate Report Button
-                      SizedBox(
-                        width: double.infinity,
-                        child: _buildControlCard(
-                          title: 'Generate Report',
-                          icon: Icons.assignment,
-                          color: Colors.purple,
-                          onTap: _generateReport,
-                        ),
-                      ),
+                          const SizedBox(width: 16),
+                            //Expanded(
+                            //   child: _buildControlCard(
+                            //     title: 'Add Test Detection',
+                            //     icon: Icons.bug_report,
+                            //     color: Colors.pink,
+                            //     onTap: _addTestDetection,
+                            //   ),
+                          //),
+                        ],
+                      ),*/
                       
                       const SizedBox(height: 32),
                       
@@ -3471,20 +3500,47 @@ class BoundingBoxPainter extends CustomPainter {
 
   BoundingBoxPainter(this.detections);
 
+  // NEW: Get different colors for different damage types
+  Color _getColorForDamageType(String damageType) {
+    switch (damageType.toLowerCase()) {
+      case 'crack':
+      case 'cracking':
+        return Colors.red;
+      case 'corrosion':
+      case 'rust':
+        return Colors.orange;
+      case 'deformation':
+      case 'dent':
+        return Colors.purple;
+      case 'spalling':
+        return Colors.yellow;
+      case 'no damage':
+      case 'no damage detected':
+        return Colors.green;
+      default:
+        return Colors.blue; // Default color for unknown damage types
+    }
+  }
+
   @override
   void paint(Canvas canvas, Size size) {
-    final paint = Paint()
-      ..color = Colors.red
-      ..strokeWidth = 3.0
-      ..style = PaintingStyle.stroke;
-
-    final backgroundPaint = Paint()
-      ..color = Colors.red;
-
-    for (var detection in detections) {
+    for (int i = 0; i < detections.length; i++) {
+      var detection = detections[i];
       final box = detection['box'];
       final label = detection['label'];
       final confidence = detection['confidence'];
+      final damageType = detection['damageType'] ?? label ?? 'unknown';
+
+      // NEW: Use different colors for different damage types
+      final damageColor = _getColorForDamageType(damageType);
+      
+      final paint = Paint()
+        ..color = damageColor
+        ..strokeWidth = 3.0
+        ..style = PaintingStyle.stroke;
+
+      final backgroundPaint = Paint()
+        ..color = damageColor;
 
       // Convert normalized coordinates to screen coordinates
       final x = box['x'] * size.width;
@@ -3496,8 +3552,11 @@ class BoundingBoxPainter extends CustomPainter {
       final rect = Rect.fromLTWH(x, y, width, height);
       canvas.drawRect(rect, paint);
 
-      // Prepare label text
-      final labelText = '$label ${(confidence * 100).toInt()}%';
+      // Prepare label text with damage index for multiple damages
+      final labelText = detections.length > 1 
+          ? '$label ${(confidence * 100).toInt()}%'
+          : '$label ${(confidence * 100).toInt()}%';
+          
       final textSpan = TextSpan(
         text: labelText,
         style: const TextStyle(
@@ -3512,7 +3571,7 @@ class BoundingBoxPainter extends CustomPainter {
       );
       textPainter.layout();
 
-      // Calculate label background position and size
+      // Calculate label background position (avoid overlapping)
       final labelY = y > textPainter.height + 8 ? y - textPainter.height - 8 : y + height + 4;
       final labelRect = Rect.fromLTWH(
         x,
@@ -3527,10 +3586,10 @@ class BoundingBoxPainter extends CustomPainter {
       // Draw label text
       textPainter.paint(canvas, Offset(x + 8, labelY + 4));
 
-      // Draw corner markers for better visibility
+      // Draw corner markers with damage-specific colors
       final cornerLength = 20.0;
       final cornerPaint = Paint()
-        ..color = Colors.red
+        ..color = damageColor
         ..strokeWidth = 4.0
         ..style = PaintingStyle.stroke;
 

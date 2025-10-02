@@ -1,10 +1,12 @@
 import 'package:flutter/material.dart';
+import 'dart:async';
 
 class LoadingBufferScreen extends StatefulWidget {
   final String title;
   final String message;
-  final Future<void> Function()? onComplete;
+  final Future<bool> Function()? onComplete; // Changed to return bool for success/failure
   final Duration? duration;
+  final Map<String, dynamic>? navigationData; // Add navigation data
 
   const LoadingBufferScreen({
     Key? key,
@@ -12,6 +14,7 @@ class LoadingBufferScreen extends StatefulWidget {
     required this.message,
     this.onComplete,
     this.duration,
+    this.navigationData, // Add navigation data parameter
   }) : super(key: key);
 
   @override
@@ -22,6 +25,8 @@ class _LoadingBufferScreenState extends State<LoadingBufferScreen>
     with TickerProviderStateMixin {
   late AnimationController _controller;
   late Animation<double> _animation;
+  bool _onCompleteExecuted = false;
+  Timer? _timeoutTimer;
 
   @override
   void initState() {
@@ -39,29 +44,131 @@ class _LoadingBufferScreenState extends State<LoadingBufferScreen>
     
     _controller.repeat(reverse: true);
     
-    // Auto-start cleanup immediately if callback provided
+    // Start cleanup immediately if callback provided
     if (widget.onComplete != null) {
-      // Start cleanup immediately in background
+      print('🔄 LoadingBufferScreen: Starting onComplete execution');
       Future.microtask(() async {
-        if (mounted) {
-          await widget.onComplete!();
+        if (mounted && !_onCompleteExecuted) {
+          _onCompleteExecuted = true;
+          try {
+            // Execute cleanup and get result
+            final success = await widget.onComplete!();
+            print('✅ LoadingBufferScreen: onComplete executed with result: $success');
+            
+            if (success && mounted) {
+              // Cleanup was successful, now handle navigation
+              await _handleSuccessfulNavigation();
+            } else if (mounted) {
+              print('❌ LoadingBufferScreen: Cleanup failed, handling as navigation failure');
+              _handleNavigationFailure();
+            }
+          } catch (e) {
+            print('❌ LoadingBufferScreen: onComplete failed: $e');
+            if (mounted) {
+              _handleNavigationFailure();
+            }
+          }
         }
       });
     }
     
-    // Auto-complete after duration if provided (fallback)
+    // Set up timeout fallback (only if navigation truly fails)
     if (widget.duration != null) {
-      Future.delayed(widget.duration!, () async {
-        if (mounted && widget.onComplete != null) {
-          await widget.onComplete!();
+      print('⏰ LoadingBufferScreen: Setting up ${widget.duration!.inSeconds}s timeout fallback');
+      _timeoutTimer = Timer(widget.duration!, () {
+        print('⏰ LoadingBufferScreen: Timeout reached');
+        if (mounted && !_onCompleteExecuted) {
+          print('🚨 LoadingBufferScreen: CRITICAL - Timeout reached, onComplete never started');
+          _handleNavigationFailure();
         }
+        // Remove the case where onComplete finished but we're still here
+        // This is normal if navigation is in progress
       });
+    }
+    
+    // CRITICAL: Add absolute maximum timeout as final safety net (increased time)
+    Timer(const Duration(seconds: 30), () {
+      if (mounted) {
+        print('🚨 LoadingBufferScreen: ABSOLUTE TIMEOUT - Force exiting after 30 seconds');
+        _handleNavigationFailure();
+      }
+    });
+  }
+
+  Future<void> _handleSuccessfulNavigation() async {
+    print('🎯 LoadingBufferScreen: Starting successful navigation');
+    
+    if (!mounted) {
+      print('❌ LoadingBufferScreen: Widget not mounted, cannot navigate');
+      return;
+    }
+    
+    // Check if we have navigation data
+    if (widget.navigationData == null) {
+      print('❌ LoadingBufferScreen: No navigation data provided');
+      _handleNavigationFailure();
+      return;
+    }
+    
+    try {
+      print('🎯 LoadingBufferScreen: Navigation data: ${widget.navigationData}');
+      
+      // Import the ReportDetailScreen
+      final report = widget.navigationData!['report'];
+      final fromAnalysis = widget.navigationData!['fromAnalysis'] ?? false;
+      
+      print('🎯 LoadingBufferScreen: About to navigate to ReportDetailScreen');
+      print('🎯 LoadingBufferScreen: Report ID: ${report?.id}');
+      print('🎯 LoadingBufferScreen: From Analysis: $fromAnalysis');
+      print('🎯 LoadingBufferScreen: Navigator can push replacement: ${Navigator.canPop(context)}');
+      
+      // Use pushReplacement to replace this loading screen
+      await Navigator.pushReplacement(
+        context,
+        MaterialPageRoute(
+          builder: (context) {
+            // Import statement will be needed at top of file
+            // For now, we'll use dynamic import
+            print('🎯 LoadingBufferScreen: MaterialPageRoute builder called');
+            return widget.navigationData!['screenWidget'];
+          },
+        ),
+      );
+      
+      print('✅ LoadingBufferScreen: Navigation completed successfully');
+      
+    } catch (e, stackTrace) {
+      print('❌ LoadingBufferScreen: Navigation failed: $e');
+      print('❌ Stack trace: $stackTrace');
+      _handleNavigationFailure();
+    }
+  }
+
+  void _handleNavigationFailure() {
+    print('🚨 LoadingBufferScreen: Handling navigation failure');
+    if (mounted) {
+      // Try to go back to previous screen
+      if (Navigator.canPop(context)) {
+        print('🔄 LoadingBufferScreen: Navigating back due to failure/timeout');
+        Navigator.pop(context);
+      } else {
+        print('❌ LoadingBufferScreen: Cannot pop, no previous screen');
+        // Show error message
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Loading failed. Please try again.'),
+            backgroundColor: Colors.red,
+            duration: Duration(seconds: 3),
+          ),
+        );
+      }
     }
   }
 
   @override
   void dispose() {
     _controller.dispose();
+    _timeoutTimer?.cancel();
     super.dispose();
   }
 
@@ -149,9 +256,9 @@ class _LoadingBufferScreenState extends State<LoadingBufferScreen>
                   children: [
                     _buildProgressStep('Cleanup', true),
                     _buildProgressConnector(true),
-                    _buildProgressStep('Processing', true),
-                    _buildProgressConnector(false),
-                    _buildProgressStep('Ready', false),
+                    _buildProgressStep('Processing', !_onCompleteExecuted),
+                    _buildProgressConnector(_onCompleteExecuted),
+                    _buildProgressStep('Ready', _onCompleteExecuted),
                   ],
                 ),
                 

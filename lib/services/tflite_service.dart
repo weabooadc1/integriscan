@@ -477,15 +477,15 @@ class TFLiteService {
 
         if (centerX < 0 || centerY < 0 || width <= 0 || height <= 0) continue;
 
-        if (width > 0.8 || height > 0.8) {
+        if (width > 0.95 || height > 0.95) {
           print('$prefix: Skipping oversized box - width: ${(width * 100).toInt()}%, height: ${(height * 100).toInt()}%');
           continue;
         }
 
         final originalWidth = width;
         final originalHeight = height;
-        width = width.clamp(0.05, 0.5);
-        height = height.clamp(0.05, 0.5);
+        width = width.clamp(0.05, 0.8);
+        height = height.clamp(0.05, 0.8);
 
         if (originalWidth != width || originalHeight != height) {
           print('$prefix: Adjusted box size from ${(originalWidth * 100).toInt()}%x${(originalHeight * 100).toInt()}% to ${(width * 100).toInt()}%x${(height * 100).toInt()}%');
@@ -505,7 +505,7 @@ class TFLiteService {
           }
         }
 
-        if (detectionMaxConf > 0.3) {
+        if (detectionMaxConf > 0.2) {
           final x = (centerX - width / 2).clamp(0.0, 0.95);
           final y = (centerY - height / 2).clamp(0.0, 0.95);
 
@@ -554,7 +554,7 @@ class TFLiteService {
     final damageType = _labels != null && bestClass < _labels!.length
         ? _labels![bestClass]
         : 'Class $bestClass';
-    final isDamageDetected = maxConfidence > 0.3 && damageType != 'No Damage';
+    final isDamageDetected = maxConfidence > 0.2 && damageType != 'No Damage';
 
     return {
       'isDamageDetected': isDamageDetected,
