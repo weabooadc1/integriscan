@@ -398,6 +398,27 @@ class RecommendationsService {
     return rec.severity;
   }
 
+  /// Get generic severity for Firebase uploads (doesn't expose specific recommendation severity levels)
+  static String getGenericSeverity(String damageType, double confidence) {
+    final normalizedType = _normalizeDamageType(damageType);
+    final rec = _recommendations[normalizedType];
+    
+    if (rec == null || confidence < 0.5) {
+      return 'Low';
+    }
+    
+    // Return generic severity based on damage type without exposing specific recommendation levels
+    switch (normalizedType) {
+      case 'deformation':
+        return confidence > 0.8 ? 'High' : 'Medium';
+      case 'crack':
+      case 'rust':
+        return confidence > 0.9 ? 'High' : confidence > 0.7 ? 'Medium' : 'Low';
+      default:
+        return confidence > 0.8 ? 'Medium' : 'Low';
+    }
+  }
+
   static String getUrgency(String damageType) {
     final normalizedType = _normalizeDamageType(damageType);
     final rec = _recommendations[normalizedType];
@@ -410,7 +431,126 @@ class RecommendationsService {
     return _recommendations[normalizedType];
   }
 
-  /// Get a formatted engineering report for a specific damage detection
+  /// Get filtered recommendations for Firebase uploads (excludes sensitive information)
+  static List<String> getFilteredRecommendations(String damageType, double confidence) {
+    final normalizedType = _normalizeDamageType(damageType);
+    final rec = _recommendations[normalizedType];
+    
+    if (rec == null) {
+      print('⚠️ No recommendations found for damage type: "$damageType" (normalized: "$normalizedType")');
+      return ['No specific recommendations available for this damage type.'];
+    }
+    
+    print('✅ Generating filtered recommendations (no sensitive data) for: ${rec.damageType}');
+    
+    List<String> recommendations = [];
+    
+    // Basic Assessment Header (without sensitive fields)
+    recommendations.add('=== STRUCTURAL DAMAGE ASSESSMENT ===');
+    recommendations.add('Damage Classification: ${rec.damageType}');
+    recommendations.add('Assessment Required: Professional Evaluation Recommended');
+    recommendations.add('');
+    
+    // Immediate Safety Measures
+    recommendations.add('=== 1. IMMEDIATE SAFETY & ASSESSMENT ===');
+    recommendations.addAll(rec.immediateSafety);
+    recommendations.add('');
+    
+    // General Repair Guidance (filtered to remove specific cost/time references)
+    recommendations.add('=== 2. REPAIR RECOMMENDATIONS ===');
+    recommendations.addAll(_filterSensitiveContent(rec.minorRepairs));
+    recommendations.add('');
+    recommendations.addAll(_filterSensitiveContent(rec.majorRepairs));
+    recommendations.add('');
+    
+    // Safety Precautions
+    recommendations.add('=== 3. SAFETY PRECAUTIONS ===');
+    recommendations.addAll(rec.safetyNotes);
+    recommendations.add('');
+    
+    // Preventive Measures
+    recommendations.add('=== 4. PREVENTIVE & LONG-TERM MEASURES ===');
+    recommendations.addAll(rec.preventiveMeasures);
+    recommendations.add('');
+    
+    // AI Detection Confidence Assessment
+    recommendations.add('=== 5. AI DETECTION CONFIDENCE ANALYSIS ===');
+    recommendations.add('Detection Confidence: ${(confidence * 100).toInt()}%');
+    if (confidence > 0.9) {
+      recommendations.add('HIGH CONFIDENCE - Proceed with professional assessment immediately');
+      recommendations.add('Recommendation: Engage structural engineer within 24-48 hours');
+    } else if (confidence > 0.7) {
+      recommendations.add('MEDIUM CONFIDENCE - Verify damage through manual inspection');
+      recommendations.add('Recommendation: Site visit by qualified inspector required before proceeding');
+    } else {
+      recommendations.add('LOW CONFIDENCE - Manual verification essential');
+      recommendations.add('Recommendation: Professional inspection required; AI detection may be inconclusive');
+    }
+    recommendations.add('');
+    
+    // Professional Guidance
+    recommendations.add('=== 6. PROFESSIONAL GUIDANCE ===');
+    recommendations.add('• Seek licensed structural engineer consultation for all structural repairs');
+    recommendations.add('• Prioritize life-safety repairs (load-bearing elements) over cosmetic issues');
+    recommendations.add('• Maintain detailed documentation throughout repair process');
+    recommendations.add('• Comply with local building codes and permit requirements');
+    
+    return recommendations;
+  }
+
+  /// Helper method to filter out sensitive content from recommendation lists
+  static List<String> _filterSensitiveContent(List<String> recommendations) {
+    return recommendations.where((rec) => 
+      !rec.toLowerCase().contains('cost') &&
+      !rec.toLowerCase().contains('\$') &&
+      !rec.toLowerCase().contains('hour') &&
+      !rec.toLowerCase().contains('week') &&
+      !rec.toLowerCase().contains('month') &&
+      !rec.toLowerCase().contains('day') &&
+      !rec.toLowerCase().contains('intermediate') &&
+      !rec.toLowerCase().contains('professional') &&
+      !rec.toLowerCase().contains('skill')
+    ).toList();
+  }
+
+  /// Filter summary recommendations to remove sensitive information for Firebase uploads
+  static List<String> getFilteredSummaryRecommendations(List<String> fullRecommendations) {
+    return _filterSensitiveContent(fullRecommendations);
+  }
+
+  /// Get public-safe engineering report for Firebase uploads (excludes sensitive fields)
+  static Map<String, dynamic> getPublicRecommendationData(String damageType, double confidence) {
+    final normalizedType = _normalizeDamageType(damageType);
+    final rec = _recommendations[normalizedType];
+    if (rec == null) {
+      return {
+        'available': false,
+        'message': 'No specific engineering recommendations available for this damage type.'
+      };
+    }
+    
+    return {
+      'available': true,
+      'damageClassification': rec.damageType,
+      'assessmentRequired': 'Professional Evaluation Recommended',
+      'immediateSafety': rec.immediateSafety,
+      'generalRepairs': _filterSensitiveContent(rec.minorRepairs + rec.majorRepairs),
+      'preventiveMeasures': rec.preventiveMeasures,
+      'safetyPrecautions': rec.safetyNotes,
+      'confidence': confidence,
+      'confidenceLevel': confidence > 0.9 ? 'High' : confidence > 0.7 ? 'Medium' : 'Low',
+      'professionalRequired': true,
+      'priorityLevel': rec.damageType == 'Structural Deformation' ? 'Critical' : 'High',
+      'confidenceRecommendation': confidence > 0.9 
+        ? 'High confidence detection - proceed with professional assessment immediately'
+        : confidence > 0.7 
+          ? 'Medium confidence detection - verify damage before proceeding'
+          : 'Low confidence detection - manual inspection recommended before repairs',
+      // Note: Excluded sensitive fields: skillLevel, estimatedCost, timeToComplete, materials, severity, urgency
+    };
+  }
+
+  /// Get a formatted engineering report for a specific damage detection (FULL VERSION - LOCAL USE ONLY)
   static Map<String, dynamic> getDetailedEngineeringReport(String damageType, double confidence) {
     final normalizedType = _normalizeDamageType(damageType);
     final rec = _recommendations[normalizedType];

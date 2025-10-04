@@ -2060,8 +2060,44 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> with WidgetsBinding
     }
   }
 
-  void _addTestDetection() async {
-    print('_addTestDetection called');
+  /// Show dialog to choose between single or multiple damage detection simulation
+  void _showTestDetectionOptions() {
+    showDialog(
+      context: context,
+      builder: (BuildContext context) {
+        return AlertDialog(
+          title: const Text('Test Detection Simulation'),
+          content: const Text('Choose the type of damage simulation to add:'),
+          actions: [
+            TextButton(
+              onPressed: () {
+                Navigator.of(context).pop();
+                _addSingleTestDetection();
+              },
+              child: const Text('Single Damage'),
+            ),
+            TextButton(
+              onPressed: () {
+                Navigator.of(context).pop();
+                _addMultipleTestDetections();
+              },
+              child: const Text('Multiple Damages'),
+            ),
+            TextButton(
+              onPressed: () {
+                Navigator.of(context).pop();
+              },
+              child: const Text('Cancel'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  /// Add single damage detection (original behavior)
+  void _addSingleTestDetection() async {
+    print('_addSingleTestDetection called');
     final random = DateTime.now().millisecondsSinceEpoch % 100;
     final damageTypes = ['Crack', 'Deformation', 'Corrosion'];
     final damageType = damageTypes[random % 3];
@@ -2109,21 +2145,179 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> with WidgetsBinding
       },
     };
     
+    // Create display detection for bounding box
+    final displayDetection = {
+      'label': '$damageType (${(confidence * 100).toInt()}%)',
+      'confidence': confidence,
+      'damageType': damageType,
+      'box': detection['boundingBox'],
+    };
+    
     if (mounted) {
       setState(() {
         _detectionHistory.add(detection);
         _damagesDetected++;
+        
+        // Update current detections for bounding box display
+        _currentDetections = [displayDetection];
+        _showBoundingBoxes = true;
       });
     }
     
     print('Detection history now has ${_detectionHistory.length} items');
-    print('Added detection: $detection');
+    print('Added single detection: $detection');
     
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('Test detection added: $damageType (${(confidence * 100).toInt()}%) - Total: ${_detectionHistory.length}'),
+          content: Text('Single test detection added: $damageType (${(confidence * 100).toInt()}%) - Total: ${_detectionHistory.length}'),
           backgroundColor: Colors.green,
+        ),
+      );
+    }
+  }
+
+  /// Add multiple damage detections on single image (enhanced behavior)
+  void _addMultipleTestDetections() async {
+    print('_addMultipleTestDetections called - Creating multiple damage simulation');
+    
+    // Generate random number of damage types (2-3 different damages on one image)
+    final random = DateTime.now().millisecondsSinceEpoch % 100;
+    final damageTypes = ['Crack', 'Deformation', 'Corrosion'];
+    
+    // Randomly select 2-3 different damage types for this image
+    final numDamages = 2 + (random % 2); // 2 or 3 damages
+    final selectedDamages = <String>[];
+    final usedIndices = <int>{};
+    
+    // Select unique damage types
+    for (int i = 0; i < numDamages; i++) {
+      int damageIndex;
+      do {
+        damageIndex = (random + i * 17) % damageTypes.length; // Use different multiplier to avoid same indices
+      } while (usedIndices.contains(damageIndex));
+      
+      usedIndices.add(damageIndex);
+      selectedDamages.add(damageTypes[damageIndex]);
+    }
+    
+    print('🎯 Simulating ${selectedDamages.length} damage types on single image: ${selectedDamages.join(', ')}');
+    
+    // Create a sample image for testing Firebase Storage
+    String imagePath = '';
+    try {
+      // Get app documents directory
+      final directory = await getApplicationDocumentsDirectory();
+      final framesDir = Directory('${directory.path}/frames');
+      
+      // Create frames directory if it doesn't exist
+      if (!await framesDir.exists()) {
+        await framesDir.create(recursive: true);
+      }
+      
+      // Copy one of the existing assets as a test image
+      final timestamp = DateTime.now().millisecondsSinceEpoch;
+      final filename = 'test_multiple_damage_${timestamp}.png';
+      final targetFile = File('${framesDir.path}/$filename');
+      
+      // Load an asset image and save it as test damage image
+      final ByteData data = await rootBundle.load('assets/images/main_top.png');
+      final Uint8List bytes = data.buffer.asUint8List();
+      await targetFile.writeAsBytes(bytes);
+      
+      imagePath = targetFile.path;
+      print('Test image created at: $imagePath');
+    } catch (e) {
+      print('Error creating test image: $e');
+      // Fall back to empty path if asset loading fails
+    }
+    
+    // Create multiple detections for the same image
+    final List<Map<String, dynamic>> newDetections = [];
+    final List<Map<String, dynamic>> displayDetections = [];
+    
+    for (int i = 0; i < selectedDamages.length; i++) {
+      final damageType = selectedDamages[i];
+      final confidence = 0.6 + ((random + i * 13) % 40) / 100; // Vary confidence for each damage
+      
+      // Create different bounding box positions for each damage type
+      final Map<String, double> boxPosition;
+      switch (i) {
+        case 0:
+          // Top-left area
+          boxPosition = {
+            'x': 0.1 + (random % 20) / 100,
+            'y': 0.1 + (random % 20) / 100,
+            'width': 0.25 + (random % 10) / 100,
+            'height': 0.2 + (random % 10) / 100,
+          };
+          break;
+        case 1:
+          // Top-right area
+          boxPosition = {
+            'x': 0.6 + (random % 20) / 100,
+            'y': 0.1 + (random % 20) / 100,
+            'width': 0.25 + (random % 10) / 100,
+            'height': 0.2 + (random % 10) / 100,
+          };
+          break;
+        case 2:
+        default:
+          // Bottom-center area
+          boxPosition = {
+            'x': 0.35 + (random % 20) / 100,
+            'y': 0.6 + (random % 20) / 100,
+            'width': 0.25 + (random % 10) / 100,
+            'height': 0.2 + (random % 10) / 100,
+          };
+          break;
+      }
+      
+      // Create detection for history
+      final detection = {
+        'damageType': damageType,
+        'confidence': confidence,
+        'imagePath': imagePath, // Same image path for all damages
+        'timestamp': DateTime.now().millisecondsSinceEpoch + i, // Slightly different timestamps
+        'boundingBox': boxPosition,
+      };
+      
+      // Create display detection for bounding boxes
+      final displayDetection = {
+        'label': '$damageType (${(confidence * 100).toInt()}%)',
+        'confidence': confidence,
+        'damageType': damageType,
+        'box': boxPosition,
+      };
+      
+      newDetections.add(detection);
+      displayDetections.add(displayDetection);
+      
+      print('🎯 Created damage ${i + 1}/${selectedDamages.length}: $damageType (${(confidence * 100).toInt()}%)');
+    }
+    
+    if (mounted) {
+      setState(() {
+        // Add all detections to history
+        _detectionHistory.addAll(newDetections);
+        _damagesDetected += newDetections.length;
+        
+        // Update current detections for bounding box display
+        _currentDetections = displayDetections;
+        _showBoundingBoxes = true;
+      });
+    }
+    
+    print('Detection history now has ${_detectionHistory.length} items');
+    print('Added ${newDetections.length} detections for multiple damage simulation');
+    print('Updated bounding box display with ${displayDetections.length} boxes');
+    
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Multiple damage simulation: ${selectedDamages.join(', ')} - Total detections: ${_detectionHistory.length}'),
+          backgroundColor: Colors.purple,
+          duration: const Duration(seconds: 4),
         ),
       );
     }
@@ -2898,25 +3092,25 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> with WidgetsBinding
                       const SizedBox(height: 16),
                       
                       // ADD: Manual Test Buttons
-                     /* Row(
+                     /*Row(
                         children: [
                           Expanded(
-                            ///child: _buildControlCard(
+                            child: _buildControlCard(
                               title: 'Test AI Analysis',
-                              //icon: Icons.psychology,
-                              //color: Colors.cyan,
-                             /// onTap: _testManualAnalysis,
-                            ////),
+                              icon: Icons.psychology,
+                              color: Colors.cyan,
+                              onTap: _testManualAnalysis,
+                            ),
                           ),
                           const SizedBox(width: 16),
-                            //Expanded(
-                            //   child: _buildControlCard(
-                            //     title: 'Add Test Detection',
-                            //     icon: Icons.bug_report,
-                            //     color: Colors.pink,
-                            //     onTap: _addTestDetection,
-                            //   ),
-                          //),
+                            Expanded(
+                              child: _buildControlCard(
+                                title: 'Add Test Detection',
+                                 icon: Icons.bug_report,
+                                 color: Colors.pink,
+                                 onTap: _showTestDetectionOptions,
+                               ),
+                          ),
                         ],
                       ),*/
                       

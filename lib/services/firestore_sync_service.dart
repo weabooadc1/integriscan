@@ -1,6 +1,7 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:integriscan/models/report_models.dart';
 import 'package:integriscan/services/firebase_storage_service.dart';
+import 'package:integriscan/services/recommendations_service.dart';
 
 class FirestoreSyncService {
   static final _firestore = FirebaseFirestore.instance;
@@ -21,6 +22,11 @@ class FirestoreSyncService {
       
       // Upload main report document
       final reportRef = _firestore.collection('reports').doc(report.id);
+      // Create filtered summary for Firebase (excludes sensitive data)
+      final filteredSummaryRecommendations = RecommendationsService.getFilteredSummaryRecommendations(
+        report.summary.recommendations
+      );
+      
       final reportData = {
         'id': report.id,
         'userId': report.userId,
@@ -28,8 +34,15 @@ class FirestoreSyncService {
         'createdAt': report.createdAt.toIso8601String(),
         'detectionsCount': report.detections.length,
         'severityLevel': report.summary.overallSeverity,
-        'recommendations': report.summary.recommendations,
-        'summary': report.summary.toMap(),
+        'recommendations': filteredSummaryRecommendations, // Use filtered summary recommendations
+        'summary': {
+          'overallSeverity': report.summary.overallSeverity,
+          'recommendations': filteredSummaryRecommendations.join('|'), // Use filtered recommendations in summary too
+          'totalDetections': report.summary.totalDetections,
+          'cracksCount': report.summary.cracksCount,
+          'corrosionCount': report.summary.corrosionCount,
+          'deformationCount': report.summary.deformationCount,
+        },
         'syncedAt': DateTime.now().toIso8601String(),
       };
       
@@ -45,6 +58,12 @@ class FirestoreSyncService {
         // Use Firebase Storage URL if available, otherwise use local path
         final imageUrl = imageUrls[detection.id] ?? detection.imagePath;
         
+        // Get filtered recommendations for Firebase (excludes sensitive data)
+        final filteredRecommendations = RecommendationsService.getFilteredRecommendations(
+          detection.damageType,
+          detection.confidence,
+        );
+        
         final detectionData = {
           'id': detection.id,
           'reportId': detection.reportId,
@@ -53,8 +72,8 @@ class FirestoreSyncService {
           'imagePath': imageUrl, // This will be the Firebase Storage download URL
           'timestamp': detection.timestamp.toIso8601String(),
           'boundingBox': detection.boundingBox?.toMap(),
-          'severity': detection.severity,
-          'recommendations': detection.recommendations,
+          'severity': RecommendationsService.getGenericSeverity(detection.damageType, detection.confidence), // Use generic severity for Firebase
+          'recommendations': filteredRecommendations, // Use filtered recommendations for Firebase
         };
         
         await detectionsRef.doc(detection.id).set(detectionData);
@@ -347,8 +366,15 @@ class FirestoreSyncService {
           'createdAt': report.createdAt.toIso8601String(),
           'detectionsCount': report.detections.length,
           'severityLevel': report.summary.overallSeverity,
-          'recommendations': report.summary.recommendations,
-          'summary': report.summary.toMap(),
+          'recommendations': RecommendationsService.getFilteredSummaryRecommendations(report.summary.recommendations), // Use filtered summary recommendations
+          'summary': {
+            'overallSeverity': report.summary.overallSeverity,
+            'recommendations': RecommendationsService.getFilteredSummaryRecommendations(report.summary.recommendations).join('|'), // Use filtered recommendations in summary too
+            'totalDetections': report.summary.totalDetections,
+            'cracksCount': report.summary.cracksCount,
+            'corrosionCount': report.summary.corrosionCount,
+            'deformationCount': report.summary.deformationCount,
+          },
           'detections': report.detections.map((d) => {
             'id': d.id,
             'reportId': d.reportId,
@@ -357,8 +383,8 @@ class FirestoreSyncService {
             'imagePath': imageUrls[d.id] ?? d.imagePath, // Use Firebase Storage URL if available
             'timestamp': d.timestamp.toIso8601String(),
             'boundingBox': d.boundingBox?.toMap(),
-            'severity': d.severity,
-            'recommendations': d.recommendations,
+            'severity': RecommendationsService.getGenericSeverity(d.damageType, d.confidence), // Use generic severity for Firebase
+            'recommendations': RecommendationsService.getFilteredRecommendations(d.damageType, d.confidence), // Use filtered recommendations for Firebase
           }).toList(),
         },
         'syncedAt': DateTime.now().toIso8601String(),
