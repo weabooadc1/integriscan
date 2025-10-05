@@ -3092,7 +3092,7 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> with WidgetsBinding
                       const SizedBox(height: 16),
                       
                       // ADD: Manual Test Buttons
-                     /*Row(
+                     Row(
                         children: [
                           Expanded(
                             child: _buildControlCard(
@@ -3112,7 +3112,7 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> with WidgetsBinding
                                ),
                           ),
                         ],
-                      ),*/
+                      ),
                       
                       const SizedBox(height: 32),
                       

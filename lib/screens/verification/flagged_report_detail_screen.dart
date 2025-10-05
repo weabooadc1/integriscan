@@ -662,10 +662,13 @@ class FlaggedReportDetailScreen extends StatelessWidget {
   }
 
   Widget _buildRecommendationSection(String damageType, List<DamageDetection> detections) {
-    // Get full recommendation data from RecommendationsService
-    final recommendation = RecommendationsService.getRecommendation(damageType);
+    // Calculate average confidence for this damage type
+    final avgConfidence = detections.fold<double>(0, (sum, det) => sum + det.confidence) / detections.length;
     
-    if (recommendation == null) {
+    // Get structured recommendations from RecommendationsService
+    final recommendations = RecommendationsService.getFilteredRecommendations(damageType, avgConfidence);
+    
+    if (recommendations.isEmpty || recommendations.first.contains('No specific recommendations')) {
       return Container(
         margin: const EdgeInsets.only(bottom: 16),
         padding: const EdgeInsets.all(16),
@@ -696,53 +699,140 @@ class FlaggedReportDetailScreen extends StatelessWidget {
       );
     }
 
-    return ExpansionTile(
-      title: Text(
-        'Engineer Recommendation for ${damageType.toUpperCase()} Damage',
-        style: const TextStyle(fontWeight: FontWeight.w600),
+    // Parse recommendations into sections
+    final sections = _parseRecommendationSections(recommendations);
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 16),
+      child: ExpansionTile(
+        initiallyExpanded: true,
+        title: Text(
+          'Recommendations for ${damageType.toUpperCase()} Damage',
+          style: const TextStyle(
+            fontWeight: FontWeight.bold,
+            fontSize: 16,
+          ),
+        ),
+        subtitle: Text(
+          detections.length == 1 
+            ? 'Confidence: ${(detections.first.confidence * 100).toStringAsFixed(1)}%'
+            : '${detections.length} detections found',
+          style: TextStyle(
+            fontSize: 12,
+            color: Colors.grey[600],
+          ),
+        ),
+        children: [
+          Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: sections.entries.map((entry) => _buildSection(entry.key, entry.value)).toList(),
+            ),
+          ),
+        ],
       ),
-      children: [
-        Padding(
-          padding: const EdgeInsets.all(16),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
+    );
+  }
+
+  // Parse recommendations into sections
+  Map<String, List<String>> _parseRecommendationSections(List<String> recommendations) {
+    final Map<String, List<String>> sections = {};
+    String currentSection = '';
+    
+    for (final line in recommendations) {
+      if (line.startsWith('===')) {
+        currentSection = line.replaceAll('===', '').trim();
+        sections[currentSection] = [];
+      } else if (line.trim().isNotEmpty && currentSection.isNotEmpty) {
+        sections[currentSection]!.add(line);
+      }
+    }
+    
+    return sections;
+  }
+
+  // Build a section widget
+  Widget _buildSection(String title, List<String> content) {
+    // Determine section color and icon
+    IconData icon;
+    Color color;
+    
+    if (title.contains('SAFETY')) {
+      icon = Icons.shield;
+      color = Colors.red;
+    } else if (title.contains('IMMEDIATE')) {
+      icon = Icons.emergency;
+      color = Colors.orange;
+    } else if (title.contains('REPAIR')) {
+      icon = Icons.build;
+      color = Colors.blue;
+    } else if (title.contains('PREVENTIVE')) {
+      icon = Icons.health_and_safety;
+      color = Colors.green;
+    } else if (title.contains('CONFIDENCE')) {
+      icon = Icons.analytics;
+      color = Colors.purple;
+    } else if (title.contains('PROFESSIONAL')) {
+      icon = Icons.engineering;
+      color = Colors.indigo;
+    } else {
+      icon = Icons.info;
+      color = Colors.grey;
+    }
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 16),
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: color.withOpacity(0.05),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: color.withOpacity(0.2)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
             children: [
-              const SizedBox(height: 16),
-              const Text('Recommendation', style: TextStyle(fontWeight: FontWeight.w600)),
-              ...recommendation.recommendations.map((rec) => Padding(
-                padding: const EdgeInsets.only(left: 16, top: 4),
-                child: Text('$rec'),
-              )),
-              
-              const SizedBox(height: 16),
-              const Text('Safety Notes:', style: TextStyle(fontWeight: FontWeight.w600, color: Colors.red)),
-              ...recommendation.safetyNotes.map((note) => Padding(
-                padding: const EdgeInsets.only(left: 16, top: 4),
-                child: Text('⚠️ $note'),
-              )),
-              
-              const SizedBox(height: 16),
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                decoration: BoxDecoration(
-                  color: Colors.green.shade100,
-                  borderRadius: BorderRadius.circular(4),
-                ),
+              Icon(icon, color: color, size: 20),
+              const SizedBox(width: 8),
+              Expanded(
                 child: Text(
-                  detections.length == 1 
-                    ? 'Detection Confidence: ${(detections.first.confidence * 100).toStringAsFixed(1)}%'
-                    : 'Total Detections: ${detections.length} instances',
+                  title,
                   style: TextStyle(
-                    fontSize: 12,
-                    fontWeight: FontWeight.w600,
-                    color: Colors.green.shade700,
+                    fontSize: 14,
+                    fontWeight: FontWeight.bold,
+                    color: color,
                   ),
                 ),
               ),
             ],
           ),
-        ),
-      ],
+          const SizedBox(height: 12),
+          ...content.map((item) => Padding(
+            padding: const EdgeInsets.only(bottom: 6),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  item.startsWith('•') || item.startsWith('⚠️') ? '' : '• ',
+                  style: TextStyle(color: color, fontSize: 14),
+                ),
+                Expanded(
+                  child: Text(
+                    item,
+                    style: TextStyle(
+                      fontSize: 14,
+                      color: Colors.grey[800],
+                      height: 1.4,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          )),
+        ],
+      ),
     );
   }
 
