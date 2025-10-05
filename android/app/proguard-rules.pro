@@ -1,4 +1,32 @@
-# TensorFlow Lite - Keep all classes and nested classes
+# ===== Google Play Core - Suppress warnings for unused classes =====
+-dontwarn com.google.android.play.core.**
+-keep class com.google.android.play.core.** { *; }
+
+# ===== VLC Player - CRITICAL for Release Builds =====
+# Keep all VLC native library classes
+-keep class org.videolan.libvlc.** { *; }
+-dontwarn org.videolan.libvlc.**
+-keep class org.videolan.medialibrary.** { *; }
+-dontwarn org.videolan.medialibrary.**
+
+# Flutter VLC Player Plugin
+-keep class software.solid.fluttervlcplayer.** { *; }
+-dontwarn software.solid.fluttervlcplayer.**
+
+# Keep VLC JNI methods
+-keepclasseswithmembers class * {
+    native <methods>;
+}
+
+# ===== Flutter Core =====
+-keep class io.flutter.app.** { *; }
+-keep class io.flutter.plugin.**  { *; }
+-keep class io.flutter.util.**  { *; }
+-keep class io.flutter.view.**  { *; }
+-keep class io.flutter.**  { *; }
+-keep class io.flutter.plugins.**  { *; }
+
+# ===== TensorFlow Lite - Keep all classes and nested classes =====
 -keep class org.tensorflow.lite.** { *; }
 -keep class org.tensorflow.lite.**$* { *; }
 
