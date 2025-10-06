@@ -5,11 +5,13 @@ import 'package:integriscan/component/primarybutton.dart';
 import 'package:integriscan/component/rounded_input_field.dart';
 import 'package:integriscan/component/rounded_password_field.dart';
 import 'package:integriscan/constant.dart';
-import 'package:integriscan/providers/auth_provider.dart';
+import 'package:integriscan/providers/auth_provider.dart' as custom_auth;
 import 'package:integriscan/screens/signup/signup_page.dart';
+import 'package:integriscan/screens/signup/email_verification_screen.dart';
 import 'package:integriscan/utils/logger.dart';
 import 'package:integriscan/utils/validation_utils.dart';
 import 'package:provider/provider.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 
 class LoginScreen extends StatelessWidget {
   const LoginScreen({super.key});
@@ -37,7 +39,7 @@ class _LoginBodyState extends State<LoginBody> {
   @override
   Widget build(BuildContext context) {
     Size size = MediaQuery.of(context).size;
-    final authProvider = Provider.of<AuthProvider>(context);
+    final authProvider = Provider.of<custom_auth.AuthProvider>(context);
 
     return Container(
       width: double.infinity,
@@ -209,9 +211,28 @@ class _LoginBodyState extends State<LoginBody> {
                                 );
                                 // The persistent error text will be shown automatically via authProvider.error
                               } else {
-                                // If login successful, navigate to root where the auth state can be detected
-                                Logger.info('Login successful, navigating to root');
-                                navigator.popUntil((route) => route.isFirst);
+                                // Check if email is verified
+                                final user = FirebaseAuth.instance.currentUser;
+                                
+                                if (user != null && !user.emailVerified) {
+                                  Logger.info('Login successful but email not verified, redirecting to verification screen');
+                                  
+                                  // Navigate to email verification screen
+                                  navigator.pushReplacement(
+                                    MaterialPageRoute(
+                                      builder: (context) => EmailVerificationScreen(
+                                        email: _email,
+                                        firstName: '', // We don't have these from login
+                                        lastName: '',
+                                        password: _password,
+                                      ),
+                                    ),
+                                  );
+                                } else {
+                                  // If email is verified, navigate to root where the auth state can be detected
+                                  Logger.info('Login successful and email verified, navigating to root');
+                                  navigator.popUntil((route) => route.isFirst);
+                                }
                               }
                             }
                           } catch (e) {
@@ -251,104 +272,252 @@ class _LoginBodyState extends State<LoginBody> {
     );
   }
   
-  // Show dialog for password reset
+  // Show enhanced dialog for password reset
   void _showForgotPasswordDialog(BuildContext context) {
     final TextEditingController emailController = TextEditingController();
+    bool isLoading = false;
+    String? errorMessage;
+    bool emailSent = false;
     
     showDialog(
       context: context,
       builder: (BuildContext dialogContext) {
-        return AlertDialog(
-          title: Text(
-            "Reset Password",
-            style: TextStyle(
-              color: kPrimaryColor,
-              fontWeight: FontWeight.bold,
-            ),
-          ),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Text(
-                "Enter your email address to receive a password reset link.",
-                style: TextStyle(fontSize: 14),
+        return StatefulBuilder(
+          builder: (BuildContext context, StateSetter setDialogState) {
+            return AlertDialog(
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(20),
               ),
-              SizedBox(height: 16),
-              TextField(
-                controller: emailController,
-                decoration: InputDecoration(
-                  hintText: "Email address",
-                  prefixIcon: Icon(Icons.email, color: kPrimaryColor),
-                  border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(29),
-                    borderSide: BorderSide(color: kPrimaryColor),
+              title: Row(
+                children: [
+                  Icon(Icons.lock_reset, color: kPrimaryColor),
+                  SizedBox(width: 8),
+                  Text(
+                    emailSent ? "Email Sent!" : "Reset Password",
+                    style: TextStyle(
+                      color: kPrimaryColor,
+                      fontWeight: FontWeight.bold,
+                      fontSize: 20,
+                    ),
                   ),
-                ),
-                keyboardType: TextInputType.emailAddress,
+                ],
               ),
-            ],
-          ),
-          actions: [
-            TextButton(
-              onPressed: () {
-                Navigator.pop(dialogContext);
-              },
-              child: Text(
-                "Cancel",
-                style: TextStyle(color: kPrimaryColor),
-              ),
-            ),
-            ElevatedButton(
-              onPressed: () async {
-                if (emailController.text.trim().isEmpty) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(
-                      content: Text('Please enter your email address'),
-                      backgroundColor: Colors.red,
+              content: emailSent
+                  ? Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(
+                          Icons.check_circle,
+                          color: Colors.green,
+                          size: 64,
+                        ),
+                        SizedBox(height: 16),
+                        Text(
+                          "Password reset email has been sent to:",
+                          style: TextStyle(fontSize: 14),
+                          textAlign: TextAlign.center,
+                        ),
+                        SizedBox(height: 8),
+                        Text(
+                          emailController.text.trim(),
+                          style: TextStyle(
+                            fontSize: 14,
+                            fontWeight: FontWeight.bold,
+                            color: kPrimaryColor,
+                          ),
+                          textAlign: TextAlign.center,
+                        ),
+                        SizedBox(height: 16),
+                        Text(
+                          "Please check your inbox and follow the instructions to reset your password.",
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: Colors.grey[600],
+                          ),
+                          textAlign: TextAlign.center,
+                        ),
+                      ],
+                    )
+                  : Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          "Enter your email address and we'll send you a link to reset your password.",
+                          style: TextStyle(
+                            fontSize: 14,
+                            color: Colors.grey[700],
+                          ),
+                        ),
+                        SizedBox(height: 20),
+                        TextField(
+                          controller: emailController,
+                          enabled: !isLoading,
+                          decoration: InputDecoration(
+                            hintText: "Email address",
+                            prefixIcon: Icon(Icons.email, color: kPrimaryColor),
+                            errorText: errorMessage,
+                            errorMaxLines: 2,
+                            border: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(12),
+                              borderSide: BorderSide(color: kPrimaryColor),
+                            ),
+                            enabledBorder: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(12),
+                              borderSide: BorderSide(color: Colors.grey[300]!),
+                            ),
+                            focusedBorder: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(12),
+                              borderSide: BorderSide(color: kPrimaryColor, width: 2),
+                            ),
+                            errorBorder: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(12),
+                              borderSide: BorderSide(color: Colors.red),
+                            ),
+                            focusedErrorBorder: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(12),
+                              borderSide: BorderSide(color: Colors.red, width: 2),
+                            ),
+                          ),
+                          keyboardType: TextInputType.emailAddress,
+                          onChanged: (value) {
+                            if (errorMessage != null) {
+                              setDialogState(() {
+                                errorMessage = null;
+                              });
+                            }
+                          },
+                        ),
+                        if (isLoading) ...[
+                          SizedBox(height: 16),
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              SizedBox(
+                                width: 20,
+                                height: 20,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                  valueColor: AlwaysStoppedAnimation<Color>(kPrimaryColor),
+                                ),
+                              ),
+                              SizedBox(width: 12),
+                              Text(
+                                "Sending email...",
+                                style: TextStyle(
+                                  color: Colors.grey[600],
+                                  fontSize: 12,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ],
+                      ],
                     ),
-                  );
-                  return;
-                }
-                
-                Navigator.pop(dialogContext);
-                
-                final authProvider = Provider.of<AuthProvider>(context, listen: false);
-                try {
-                  final success = await authProvider.sendPasswordResetEmail(
-                    emailController.text.trim(),
-                  );
-                  
-                  if (success) {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(
-                        content: Text('Password reset email sent. Check your inbox.'),
-                        backgroundColor: Colors.green,
+              actions: emailSent
+                  ? [
+                      ElevatedButton(
+                        onPressed: () {
+                          Navigator.pop(dialogContext);
+                        },
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: kPrimaryColor,
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          padding: EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                        ),
+                        child: Text(
+                          "OK",
+                          style: TextStyle(
+                            color: kPrimaryLightColor,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
                       ),
-                    );
-                  } else {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(
-                        content: Text(authProvider.error ?? 'Failed to send reset email'),
-                        backgroundColor: Colors.red,
+                    ]
+                  : [
+                      TextButton(
+                        onPressed: isLoading
+                            ? null
+                            : () {
+                                Navigator.pop(dialogContext);
+                              },
+                        child: Text(
+                          "Cancel",
+                          style: TextStyle(
+                            color: isLoading ? Colors.grey : kPrimaryColor,
+                          ),
+                        ),
                       ),
-                    );
-                  }
-                } catch (e) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(
-                      content: Text('Error: $e'),
-                      backgroundColor: Colors.red,
-                    ),
-                  );
-                }
-              },
-              style: ElevatedButton.styleFrom(
-                backgroundColor: kPrimaryColor,
-              ),
-              child: Text("Send Reset Link",
-              style: TextStyle(color: kPrimaryLightColor),),
-            ),
-          ],
+                      ElevatedButton(
+                        onPressed: isLoading
+                            ? null
+                            : () async {
+                                final email = emailController.text.trim();
+                                
+                                // Validate email
+                                if (email.isEmpty) {
+                                  setDialogState(() {
+                                    errorMessage = 'Please enter your email address';
+                                  });
+                                  return;
+                                }
+                                
+                                if (!email.contains('@') || !email.contains('.')) {
+                                  setDialogState(() {
+                                    errorMessage = 'Please enter a valid email address';
+                                  });
+                                  return;
+                                }
+                                
+                                setDialogState(() {
+                                  isLoading = true;
+                                  errorMessage = null;
+                                });
+                                
+                                final authProvider = Provider.of<custom_auth.AuthProvider>(context, listen: false);
+                                try {
+                                  final success = await authProvider.sendPasswordResetEmail(email);
+                                  
+                                  setDialogState(() {
+                                    isLoading = false;
+                                  });
+                                  
+                                  if (success) {
+                                    setDialogState(() {
+                                      emailSent = true;
+                                    });
+                                  } else {
+                                    setDialogState(() {
+                                      errorMessage = authProvider.error ?? 'Failed to send reset email';
+                                    });
+                                  }
+                                } catch (e) {
+                                  setDialogState(() {
+                                    isLoading = false;
+                                    errorMessage = 'An unexpected error occurred';
+                                  });
+                                }
+                              },
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: isLoading ? Colors.grey : kPrimaryColor,
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          padding: EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+                        ),
+                        child: Text(
+                          "Send Reset Link",
+                          style: TextStyle(
+                            color: kPrimaryLightColor,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ),
+                    ],
+            );
+          },
         );
       },
     );

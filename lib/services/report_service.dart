@@ -740,10 +740,14 @@ class ReportService {
     for (final reportMap in reportMaps) {
       final detectionMaps = await db.getDetectionsByReport(reportMap['id']);
       final detections = detectionMaps.map((map) => DamageDetection.fromMap(map)).toList();
+      
+      // Get recommendations from normalized table
+      final recommendations = await db.getReportRecommendations(reportMap['id']);
+      
       // Build summary with correct counts based on damage types
       final summary = ReportSummary(
         overallSeverity: reportMap['severityLevel'],
-        recommendations: (reportMap['recommendations'] ?? '').toString().split('|'),
+        recommendations: recommendations.isNotEmpty ? recommendations : (reportMap['recommendations'] ?? '').toString().split('|').where((r) => r.trim().isNotEmpty).toList(),
         totalDetections: detections.length,
         cracksCount: detections.where((d) => d.damageType.toLowerCase().contains('crack')).length,
         corrosionCount: detections.where((d) => d.damageType.toLowerCase().contains('corrosion') || d.damageType.toLowerCase().contains('rust') || d.damageType.toLowerCase().contains('scaling')).length,
@@ -783,9 +787,12 @@ class ReportService {
     final detectionMaps = await db.getDetectionsByReport(id);
     final detections = detectionMaps.map((map) => DamageDetection.fromMap(map)).toList();
     
+    // Get recommendations from normalized table
+    final recommendations = await db.getReportRecommendations(id);
+    
     final summary = ReportSummary(
       overallSeverity: reportMap['severityLevel'],
-      recommendations: (reportMap['recommendations'] ?? '').toString().split('|'),
+      recommendations: recommendations.isNotEmpty ? recommendations : (reportMap['recommendations'] ?? '').toString().split('|').where((r) => r.trim().isNotEmpty).toList(),
       totalDetections: detections.length,
       cracksCount: detections.where((d) => d.damageType.toLowerCase().contains('crack')).length,
       corrosionCount: detections.where((d) => d.damageType.toLowerCase().contains('corrosion') || d.damageType.toLowerCase().contains('rust') || d.damageType.toLowerCase().contains('scaling')).length,

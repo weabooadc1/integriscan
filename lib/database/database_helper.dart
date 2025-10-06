@@ -41,7 +41,7 @@ class DatabaseHelper {
     final path = join(dbPath, 'app_database.db');
     return await openDatabase(
       path,
-      version: 8, // Incremented for offline flagging support
+      version: 10, // Incremented for normalization: report_recommendations table + triggers
       onCreate: _onCreate,
       onUpgrade: _onUpgrade,
     );
@@ -51,6 +51,8 @@ class DatabaseHelper {
     await _createTables(db);
     await _createEngineerVerificationTable(db);
     await _createPendingFlagOperationsTable(db);
+    await _createReportRecommendationsTable(db);
+    await _createDetectionCountTriggers(db);
   }
 
   Future _onUpgrade(Database db, int oldVersion, int newVersion) async {
@@ -171,16 +173,114 @@ class DatabaseHelper {
         print('Error adding offline flagging support: $e');
       }
     }
+    if (oldVersion < 9) {
+      // SECURITY FIX: Remove password column from users table
+      try {
+        print('🔒 SECURITY MIGRATION: Removing plain text password storage...');
+        
+        // Check if password column exists
+        var result = await db.rawQuery("PRAGMA table_info(users)");
+        bool passwordExists = result.any((column) => column['name'] == 'password');
+        
+        if (passwordExists) {
+          // SQLite doesn't support DROP COLUMN directly, so we need to recreate the table
+          
+          // 1. Rename old table
+          await db.execute('ALTER TABLE users RENAME TO users_old');
+          
+          // 2. Create new table without password
+          await db.execute('''
+            CREATE TABLE users(
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              firstName TEXT NOT NULL,
+              lastName TEXT NOT NULL,
+              email TEXT UNIQUE NOT NULL,
+              firebaseUid TEXT UNIQUE,
+              createdAt TEXT,
+              updatedAt TEXT,
+              CONSTRAINT chk_email CHECK (email LIKE '%@%.%')
+            )
+          ''');
+          
+          // 3. Copy data from old table (excluding password)
+          await db.execute('''
+            INSERT INTO users (id, firstName, lastName, email, firebaseUid, createdAt, updatedAt)
+            SELECT id, firstName, lastName, email, 
+                   NULL as firebaseUid, 
+                   datetime('now') as createdAt,
+                   datetime('now') as updatedAt
+            FROM users_old
+          ''');
+          
+          // 4. Drop old table
+          await db.execute('DROP TABLE users_old');
+          
+          print('✅ SECURITY FIX COMPLETE: Password column removed from users table');
+          print('⚠️  Note: Users will need to use Firebase Authentication for login');
+        } else {
+          print('✅ Password column does not exist - database already secure');
+        }
+      } catch (e) {
+        print('❌ Error during password removal migration: $e');
+        print('⚠️  Manual intervention may be required');
+      }
+    }
+    if (oldVersion < 10) {
+      // NORMALIZATION: Create report_recommendations table and triggers
+      try {
+        print('🔧 NORMALIZATION MIGRATION: Creating report_recommendations table...');
+        
+        // 1. Create report_recommendations table
+        await _createReportRecommendationsTable(db);
+        print('✅ Created report_recommendations table');
+        
+        // 2. Migrate existing recommendations from reports table
+        final reports = await db.query('reports');
+        print('📊 Migrating recommendations for ${reports.length} reports...');
+        
+        int migratedCount = 0;
+        for (final report in reports) {
+          final reportId = report['id'] as String;
+          final recommendations = (report['recommendations'] as String).split('|').where((r) => r.trim().isNotEmpty).toList();
+          
+          for (int i = 0; i < recommendations.length; i++) {
+            await db.insert('report_recommendations', {
+              'reportId': reportId,
+              'recommendation': recommendations[i].trim(),
+              'displayOrder': i,
+            });
+            migratedCount++;
+          }
+        }
+        print('✅ Migrated $migratedCount recommendations');
+        
+        // 3. Create triggers to auto-update detection counts
+        await _createDetectionCountTriggers(db);
+        print('✅ Created triggers for automatic count updates');
+        
+        // 4. Add CHECK constraints for data integrity
+        // Note: SQLite doesn't support adding constraints to existing tables easily
+        // We'll rely on triggers and application logic
+        
+        print('✅ NORMALIZATION COMPLETE: Database is now normalized');
+      } catch (e) {
+        print('❌ Error during normalization migration: $e');
+        print('⚠️  Manual intervention may be required');
+      }
+    }
   }
 
   Future _createTables(Database db) async {
     await db.execute('''
       CREATE TABLE users(
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        firstName TEXT,
-        lastName TEXT,
-        email TEXT UNIQUE,
-        password TEXT
+        firstName TEXT NOT NULL,
+        lastName TEXT NOT NULL,
+        email TEXT UNIQUE NOT NULL,
+        firebaseUid TEXT UNIQUE NOT NULL,
+        createdAt TEXT NOT NULL,
+        updatedAt TEXT,
+        CONSTRAINT chk_email CHECK (email LIKE '%@%.%')
       )
     ''');
     
@@ -260,6 +360,74 @@ class DatabaseHelper {
     ''');
   }
 
+  /// Create normalized recommendations table (3NF)
+  Future _createReportRecommendationsTable(Database db) async {
+    await db.execute('''
+      CREATE TABLE report_recommendations (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        reportId TEXT NOT NULL,
+        recommendation TEXT NOT NULL,
+        displayOrder INTEGER NOT NULL DEFAULT 0,
+        FOREIGN KEY (reportId) REFERENCES reports (id) ON DELETE CASCADE
+      )
+    ''');
+    
+    // Create index for faster lookups
+    await db.execute('''
+      CREATE INDEX idx_report_recommendations_reportId 
+      ON report_recommendations(reportId)
+    ''');
+  }
+
+  /// Create triggers to automatically update detection counts
+  Future _createDetectionCountTriggers(Database db) async {
+    // Trigger: After inserting a detection, update parent report counts
+    await db.execute('''
+      CREATE TRIGGER IF NOT EXISTS update_counts_after_detection_insert
+      AFTER INSERT ON detections
+      BEGIN
+        UPDATE reports
+        SET 
+          detectionsCount = (SELECT COUNT(*) FROM detections WHERE reportId = NEW.reportId),
+          cracksCount = (SELECT COUNT(*) FROM detections WHERE reportId = NEW.reportId AND lower(damageType) LIKE '%crack%'),
+          corrosionCount = (SELECT COUNT(*) FROM detections WHERE reportId = NEW.reportId AND (lower(damageType) LIKE '%corrosion%' OR lower(damageType) LIKE '%rust%' OR lower(damageType) LIKE '%scaling%')),
+          deformationCount = (SELECT COUNT(*) FROM detections WHERE reportId = NEW.reportId AND (lower(damageType) LIKE '%deformation%' OR lower(damageType) LIKE '%deform%'))
+        WHERE id = NEW.reportId;
+      END;
+    ''');
+    
+    // Trigger: After deleting a detection, update parent report counts
+    await db.execute('''
+      CREATE TRIGGER IF NOT EXISTS update_counts_after_detection_delete
+      AFTER DELETE ON detections
+      BEGIN
+        UPDATE reports
+        SET 
+          detectionsCount = (SELECT COUNT(*) FROM detections WHERE reportId = OLD.reportId),
+          cracksCount = (SELECT COUNT(*) FROM detections WHERE reportId = OLD.reportId AND lower(damageType) LIKE '%crack%'),
+          corrosionCount = (SELECT COUNT(*) FROM detections WHERE reportId = OLD.reportId AND (lower(damageType) LIKE '%corrosion%' OR lower(damageType) LIKE '%rust%' OR lower(damageType) LIKE '%scaling%')),
+          deformationCount = (SELECT COUNT(*) FROM detections WHERE reportId = OLD.reportId AND (lower(damageType) LIKE '%deformation%' OR lower(damageType) LIKE '%deform%'))
+        WHERE id = OLD.reportId;
+      END;
+    ''');
+    
+    // Trigger: After updating a detection's damageType, update parent report counts
+    await db.execute('''
+      CREATE TRIGGER IF NOT EXISTS update_counts_after_detection_update
+      AFTER UPDATE OF damageType ON detections
+      BEGIN
+        UPDATE reports
+        SET 
+          cracksCount = (SELECT COUNT(*) FROM detections WHERE reportId = NEW.reportId AND lower(damageType) LIKE '%crack%'),
+          corrosionCount = (SELECT COUNT(*) FROM detections WHERE reportId = NEW.reportId AND (lower(damageType) LIKE '%corrosion%' OR lower(damageType) LIKE '%rust%' OR lower(damageType) LIKE '%scaling%')),
+          deformationCount = (SELECT COUNT(*) FROM detections WHERE reportId = NEW.reportId AND (lower(damageType) LIKE '%deformation%' OR lower(damageType) LIKE '%deform%'))
+        WHERE id = NEW.reportId;
+      END;
+    ''');
+    
+    print('✅ Created detection count triggers');
+  }
+
   /// Migrate existing reports to calculate damage type counts from their detections
   Future _migrateDamageTypeCounts(Database db) async {
     try {
@@ -317,6 +485,18 @@ class DatabaseHelper {
 
   Future<int> insertUser(Map<String, dynamic> user) async {
     final db = await database;
+    // Ensure required fields are present
+    if (!user.containsKey('firebaseUid')) {
+      throw ArgumentError('firebaseUid is required');
+    }
+    if (!user.containsKey('createdAt')) {
+      user['createdAt'] = DateTime.now().toIso8601String();
+    }
+    if (!user.containsKey('updatedAt')) {
+      user['updatedAt'] = DateTime.now().toIso8601String();
+    }
+    // Remove password if accidentally passed (security)
+    user.remove('password');
     return await db.insert('users', user);
   }
 
@@ -335,7 +515,34 @@ class DatabaseHelper {
   // Report methods
   Future<int> insertReport(Map<String, dynamic> report) async {
     final db = await database;
-    return await db.insert('reports', report);
+    
+    // Extract recommendations before inserting report
+    List<String> recommendations = [];
+    if (report.containsKey('recommendations')) {
+      final recsValue = report['recommendations'];
+      if (recsValue is String) {
+        recommendations = recsValue.split('|').where((r) => r.trim().isNotEmpty).toList();
+      } else if (recsValue is List) {
+        recommendations = recsValue.map((r) => r.toString()).where((r) => r.trim().isNotEmpty).toList();
+      }
+    }
+    
+    // Keep pipe-delimited format in reports table for backward compatibility
+    final reportToInsert = Map<String, dynamic>.from(report);
+    if (recommendations.isNotEmpty) {
+      reportToInsert['recommendations'] = recommendations.join('|');
+    }
+    
+    // Insert the report
+    final result = await db.insert('reports', reportToInsert);
+    
+    // Insert recommendations into normalized table
+    if (recommendations.isNotEmpty) {
+      final reportId = report['id'] as String;
+      await _insertReportRecommendations(reportId, recommendations);
+    }
+    
+    return result;
   }
 
   Future<List<Map<String, dynamic>>> getUnsyncedReports({String? userId}) async {
@@ -396,6 +603,9 @@ class DatabaseHelper {
     
     // Start a transaction to ensure both deletions succeed or fail together
     await db.transaction((txn) async {
+      // Delete recommendations first (even though CASCADE should handle it)
+      await txn.delete('report_recommendations', where: 'reportId = ?', whereArgs: [reportId]);
+      
       // Delete all detections associated with the report
       await txn.delete('detections', where: 'reportId = ?', whereArgs: [reportId]);
       
@@ -412,6 +622,9 @@ class DatabaseHelper {
     
     await db.transaction((txn) async {
       for (String reportId in reportIds) {
+        // Delete recommendations
+        await txn.delete('report_recommendations', where: 'reportId = ?', whereArgs: [reportId]);
+        
         // Delete all detections associated with the report
         await txn.delete('detections', where: 'reportId = ?', whereArgs: [reportId]);
         
@@ -645,6 +858,76 @@ class DatabaseHelper {
       )
     ''');
   }
-}
 
+  // ============================================================================
+  // NORMALIZED RECOMMENDATIONS METHODS
+  // ============================================================================
+
+  /// Insert recommendations for a report into the normalized table
+  Future<void> _insertReportRecommendations(String reportId, List<String> recommendations) async {
+    final db = await database;
+    
+    for (int i = 0; i < recommendations.length; i++) {
+      await db.insert('report_recommendations', {
+        'reportId': reportId,
+        'recommendation': recommendations[i].trim(),
+        'displayOrder': i,
+      });
+    }
+  }
+
+  /// Get recommendations for a report from the normalized table
+  Future<List<String>> getReportRecommendations(String reportId) async {
+    final db = await database;
+    
+    try {
+      final results = await db.query(
+        'report_recommendations',
+        where: 'reportId = ?',
+        whereArgs: [reportId],
+        orderBy: 'displayOrder ASC',
+      );
+      
+      return results.map((row) => row['recommendation'] as String).toList();
+    } catch (e) {
+      // If table doesn't exist yet (old database), fall back to pipe-delimited
+      print('⚠️  report_recommendations table not found, attempting migration...');
+      return [];
+    }
+  }
+
+  /// Update recommendations for a report (deletes old ones and inserts new ones)
+  Future<void> updateReportRecommendations(String reportId, List<String> recommendations) async {
+    final db = await database;
+    
+    await db.transaction((txn) async {
+      // Delete existing recommendations
+      await txn.delete(
+        'report_recommendations',
+        where: 'reportId = ?',
+        whereArgs: [reportId],
+      );
+      
+      // Insert new recommendations
+      for (int i = 0; i < recommendations.length; i++) {
+        await txn.insert('report_recommendations', {
+          'reportId': reportId,
+          'recommendation': recommendations[i].trim(),
+          'displayOrder': i,
+        });
+      }
+    });
+  }
+
+  /// Delete recommendations when a report is deleted (handled by ON DELETE CASCADE)
+  /// This method is for explicit deletion if needed
+  Future<void> deleteReportRecommendations(String reportId) async {
+    final db = await database;
+    await db.delete(
+      'report_recommendations',
+      where: 'reportId = ?',
+      whereArgs: [reportId],
+    );
+  }
+}
 

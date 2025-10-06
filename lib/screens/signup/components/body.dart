@@ -8,11 +8,10 @@ import 'package:integriscan/component/already_have_an_acc_check.dart';
 import 'package:integriscan/providers/auth_provider.dart' as custom_auth;
 import 'package:integriscan/screens/login/login_screen.dart';
 import 'package:integriscan/screens/signup/components/background.dart';
+import 'package:integriscan/screens/signup/email_verification_screen.dart';
 import 'package:integriscan/utils/logger.dart';
 import 'package:integriscan/utils/validation_utils.dart';
 import 'package:provider/provider.dart';
-import 'package:integriscan/database/database_helper.dart';
-import 'package:integriscan/services/firestore_service.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 
 class SignupScreen extends StatefulWidget {
@@ -287,7 +286,9 @@ class _SignupScreenState extends State<SignupScreen> {
     setState(() {
       errorMessage = "";
       _isLoading = true;
-    });    try {
+    });
+
+    try {
       // Get the AuthProvider and store context references
       final authProvider = Provider.of<custom_auth.AuthProvider>(context, listen: false);
       final scaffoldMessenger = ScaffoldMessenger.of(context);
@@ -308,38 +309,60 @@ class _SignupScreenState extends State<SignupScreen> {
         });
         
         if (success) {
-          // Store user locally in SQLite
-          await DatabaseHelper().insertUser({
-            'firstName': firstName,
-            'lastName': lastName,
-            'email': email,
-            'password': password, // In production, hash the password!
-          });
-
-          // Store user online in Firestore
+          // Get current user
           final user = FirebaseAuth.instance.currentUser;
-          if (user != null) {
-            await FirestoreService.saveUser(
-              uid: user.uid,
-              firstName: firstName,
-              lastName: lastName,
-              email: email,
-            );
-          }
-
-          // Show success message
-          Logger.info("Component body: Registration successful, showing snackbar");
-          scaffoldMessenger.showSnackBar(
-            const SnackBar(
-              content: Text('Account created successfully!'),
-              backgroundColor: Colors.green,
-              duration: Duration(seconds: 2),
-            ),
-          );
           
-          // Navigate to root where the auth state can be detected
-          Logger.info("Component body: Navigating to root screen");
-          navigator.popUntil((route) => route.isFirst);
+          if (user != null && !user.emailVerified) {
+            // Send email verification
+            try {
+              Logger.info("Component body: Sending verification email to $email");
+              await user.sendEmailVerification();
+              
+              Logger.info("Component body: Verification email sent successfully");
+              
+              // Navigate to email verification screen
+              // DON'T save to SQLite or Firestore yet - wait for verification
+              navigator.pushReplacement(
+                MaterialPageRoute(
+                  builder: (context) => EmailVerificationScreen(
+                    email: email,
+                    firstName: firstName,
+                    lastName: lastName,
+                    password: password,
+                  ),
+                ),
+              );
+            } catch (e) {
+              Logger.error("Component body: Failed to send verification email", e);
+              
+              // If email sending fails, still navigate to verification screen
+              // User can resend from there
+              scaffoldMessenger.showSnackBar(
+                SnackBar(
+                  content: Text('Account created. Please check your email to verify.'),
+                  backgroundColor: Colors.orange,
+                  duration: Duration(seconds: 3),
+                ),
+              );
+              
+              navigator.pushReplacement(
+                MaterialPageRoute(
+                  builder: (context) => EmailVerificationScreen(
+                    email: email,
+                    firstName: firstName,
+                    lastName: lastName,
+                    password: password,
+                  ),
+                ),
+              );
+            }
+          } else {
+            // User is null or already verified (shouldn't happen in normal flow)
+            Logger.error("Component body: User is null or already verified during signup", "Unexpected state");
+            setState(() {
+              errorMessage = "An unexpected error occurred. Please try again.";
+            });
+          }
         } else {
           // Show error from provider
           Logger.error("Component body: Registration failed with error", authProvider.error);

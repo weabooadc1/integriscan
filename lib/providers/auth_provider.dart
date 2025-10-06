@@ -184,10 +184,102 @@ class AuthProvider extends ChangeNotifier {
     _clearError();
     
     try {
-      await _authService.sendPasswordResetEmail(email);
+      Logger.secureLog("AuthProvider: Sending password reset email to", email);
+      
+      // Validate email first
+      if (email.isEmpty) {
+        throw Exception('Email cannot be empty');
+      }
+      
+      // Send password reset email using Firebase directly
+      await FirebaseAuth.instance.sendPasswordResetEmail(email: email);
+      
+      Logger.info("AuthProvider: Password reset email sent successfully to $email");
+      _setLoading(false);
+      notifyListeners();
+      return true;
+      
+    } on FirebaseAuthException catch (e) {
+      Logger.error("Password reset FirebaseAuthException", e.code);
+      
+      // Handle specific Firebase errors
+      String errorMessage;
+      switch (e.code) {
+        case 'invalid-email':
+          errorMessage = 'The email address is invalid.';
+          break;
+        case 'user-not-found':
+          errorMessage = 'No user found with this email address.';
+          break;
+        case 'too-many-requests':
+          errorMessage = 'Too many requests. Please try again later.';
+          break;
+        case 'network-request-failed':
+          errorMessage = 'Network error. Please check your connection.';
+          break;
+        default:
+          errorMessage = 'Failed to send reset email: ${e.message}';
+      }
+      
+      _setError(errorMessage);
+      _setLoading(false);
+      notifyListeners();
+      return false;
+      
+    } catch (e) {
+      Logger.error("Password reset unexpected error", e);
+      _setError('An unexpected error occurred while sending reset email');
+      _setLoading(false);
+      notifyListeners();
+      return false;
+    }
+  }
+
+  /// Check if current user's email is verified
+  Future<bool> checkEmailVerified() async {
+    try {
+      final user = FirebaseAuth.instance.currentUser;
+      if (user == null) {
+        Logger.error("checkEmailVerified: No current user");
+        return false;
+      }
+      
+      // Reload user to get latest verification status
+      await user.reload();
+      final updatedUser = FirebaseAuth.instance.currentUser;
+      
+      final isVerified = updatedUser?.emailVerified ?? false;
+      Logger.info("checkEmailVerified: Email verified = $isVerified");
+      return isVerified;
+    } catch (e) {
+      Logger.error("checkEmailVerified: Error checking verification status", e);
+      return false;
+    }
+  }
+
+  /// Send email verification to current user
+  Future<bool> sendEmailVerification() async {
+    _setLoading(true);
+    _clearError();
+    
+    try {
+      final user = FirebaseAuth.instance.currentUser;
+      if (user == null) {
+        throw Exception('No user logged in');
+      }
+      
+      if (user.emailVerified) {
+        Logger.info("sendEmailVerification: Email already verified");
+        _setLoading(false);
+        return true;
+      }
+      
+      await user.sendEmailVerification();
+      Logger.info("sendEmailVerification: Verification email sent to ${user.email}");
       _setLoading(false);
       return true;
     } catch (e) {
+      Logger.error("sendEmailVerification: Error sending verification email", e);
       _setError(_handleFirebaseAuthError(e));
       _setLoading(false);
       return false;
