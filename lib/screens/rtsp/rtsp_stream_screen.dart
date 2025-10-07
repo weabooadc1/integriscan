@@ -9,12 +9,15 @@ import 'package:integriscan/services/frame_capture_service.dart';
 import 'package:integriscan/services/report_service.dart';
 import 'package:integriscan/services/firestore_sync_service.dart';
 import 'package:integriscan/services/ptz_service.dart';
+import 'package:integriscan/services/compute_service.dart';
 import 'package:integriscan/providers/auth_provider.dart';
 import 'package:integriscan/screens/reports/report_detail_screen.dart';
+import 'package:integriscan/utils/work_manager.dart';
 import 'package:provider/provider.dart';
 import 'package:path_provider/path_provider.dart';
 import 'dart:async';
 import 'dart:io';
+import 'dart:typed_data';
 
 class RtspStreamScreen extends StatefulWidget {
   final String rtspUrl;
@@ -55,17 +58,12 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> with WidgetsBinding
   // CPU optimization variables - removed unused ones, kept only what's needed
   // static const double _frameSimilarityThreshold = 0.95; // Skip similar frames
   
-  // User configurable analysis settings
-  int _analysisIntervalSeconds = 5; // Default 5 seconds
-  final List<int> _availableIntervals = [3, 5, 10, 15, 30]; // Available intervals
-  
   // PTZ Control variables
   bool _ptzEnabled = false;
   bool _ptzSupported = false;
   bool _isMovingCamera = false;
   int _totalPTZMovements = 0;
   Timer? _ptzMovementTimer;
-  bool _ptzDebugMode = false; // For testing PTZ without actual camera
   
   // Bounding box display timing - removed since handled by auto-scan states
   bool _showBoundingBoxes = true;
@@ -73,6 +71,16 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> with WidgetsBinding
   bool _isNavigating = false;
   // Cleanup protection to prevent background operations during report generation
   bool _isCleaningUp = false;
+  
+  // State update debouncing to reduce UI thread pressure
+  DateTime _lastStateUpdate = DateTime.now();
+  bool _pendingStateUpdate = false;
+  Timer? _stateUpdateTimer;
+  
+  /// Helper to run async operations without awaiting (fire-and-forget)
+  void unawaited(Future<void> future) {
+    // Intentionally don't await - this is for fire-and-forget operations
+  }
 
   @override
   void initState() {
@@ -200,13 +208,6 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> with WidgetsBinding
           ),
         ),
         actions: [
-          TextButton(
-            onPressed: () {
-              Navigator.of(context).pop();
-              _testAlternativeUrls();
-            },
-            child: const Text('Test Alternative URLs'),
-          ),
           TextButton(
             onPressed: () => Navigator.of(context).pop(),
             child: const Text('Close'),
@@ -365,222 +366,6 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> with WidgetsBinding
     });
   }
   
-  /// Test alternative RTSP URLs for AMCREST IP2M-841B
-  void _testAlternativeUrls() async {
-    final List<String> alternativeUrls = [
-      'rtsp://admin:admin123@192.168.1.14:554/cam/realmonitor?channel=1&subtype=1', // Sub stream
-      'rtsp://admin:admin123@192.168.1.14:554/h264Preview_01_main',                // Alternative main
-      'rtsp://admin:admin123@192.168.1.14:554/h264Preview_01_sub',                 // Alternative sub
-      'rtsp://admin:admin123@192.168.1.14:554/live',                              // Generic live
-      'rtsp://admin:admin123@192.168.1.14:554/stream1',                           // Stream1
-      'rtsp://admin:admin123@192.168.1.14:554/cam1',                              // Cam1
-    ];
-    
-    if (mounted && !_isNavigating) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('🔍 Testing alternative RTSP URLs for your AMCREST camera...'),
-          duration: Duration(seconds: 3),
-        ),
-      );
-    }
-    
-    print('🔍 Testing ${alternativeUrls.length} alternative RTSP URLs...');
-    
-    for (int i = 0; i < alternativeUrls.length; i++) {
-      final testUrl = alternativeUrls[i];
-      print('🧪 Testing URL ${i + 1}/${alternativeUrls.length}: $testUrl');
-      
-      try {
-        // Create a temporary VLC controller to test the URL
-        final testController = VlcPlayerController.network(
-          testUrl,
-          hwAcc: HwAcc.disabled, // Disable hardware acceleration for testing
-          autoPlay: false,
-          options: VlcPlayerOptions(
-            advanced: VlcAdvancedOptions([
-              '--network-caching=1000',
-              '--rtsp-tcp',
-              '--rtsp-timeout=5',   // Quick timeout for testing
-              '--no-audio',
-            ]),
-          ),
-        );
-        
-        bool connectionSuccessful = false;
-        Timer? testTimer;
-        
-        // Set up listener for connection test
-        testController.addListener(() {
-          if (testController.value.isInitialized && 
-              testController.value.isPlaying && 
-              !testController.value.hasError) {
-            connectionSuccessful = true;
-            print('✅ URL ${i + 1} SUCCESSFUL: $testUrl');
-            
-            if (mounted && !_isNavigating) {
-              ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(
-                  content: Text('✅ Found working URL! Tap to use: ${testUrl.split('@')[1]}'),
-                  backgroundColor: Colors.green,
-                  duration: const Duration(seconds: 8),
-                  action: SnackBarAction(
-                    label: 'Use This URL',
-                    textColor: Colors.white,
-                    onPressed: () => _useAlternativeUrl(testUrl),
-                  ),
-                ),
-              );
-            }
-          } else if (testController.value.hasError) {
-            print('❌ URL ${i + 1} FAILED: $testUrl - ${testController.value.errorDescription}');
-          }
-        });
-        
-        // Initialize the test controller
-        await testController.initialize();
-        
-        // Wait up to 8 seconds for connection
-        testTimer = Timer(const Duration(seconds: 8), () {
-          if (!connectionSuccessful) {
-            print('⏱️ URL ${i + 1} TIMEOUT: $testUrl');
-          }
-        });
-        
-        // Wait a moment for the connection attempt
-        await Future.delayed(const Duration(seconds: 8));
-        
-        // Clean up
-        testTimer.cancel();
-        testController.dispose();
-        
-        // If we found a working URL, stop testing others
-        if (connectionSuccessful) {
-          break;
-        }
-        
-        // Small delay between tests
-        await Future.delayed(const Duration(seconds: 2));
-        
-      } catch (e) {
-        print('❌ URL ${i + 1} ERROR: $testUrl - $e');
-      }
-    }
-    
-    if (mounted && !_isNavigating) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('🔍 Alternative URL testing completed. Check console for results.'),
-          duration: Duration(seconds: 3),
-        ),
-      );
-    }
-  }
-  
-  /// Use an alternative URL that was found to work
-  void _useAlternativeUrl(String newUrl) {
-    print('🔄 Switching to alternative URL: $newUrl');
-    
-    // Dispose current controller
-    try {
-      _vlcViewController?.dispose();
-    } catch (e) {
-      print('🔄 Error disposing VLC controller in _useAlternativeUrl: $e');
-    }
-    
-    setState(() {
-      _isConnected = false;
-      _isLoading = true;
-    });
-    
-    // Wait a moment then initialize with new URL
-    Future.delayed(const Duration(seconds: 2), () {
-      if (mounted) {
-        // Create new controller with the working URL
-        _vlcViewController = VlcPlayerController.network(
-          newUrl,
-          hwAcc: HwAcc.full,
-          autoPlay: true,
-          options: VlcPlayerOptions(
-            advanced: VlcAdvancedOptions([
-              '--network-caching=3000',
-              '--rtsp-tcp',
-              '--live-caching=3000',
-              '--rtsp-frame-buffer-size=1000000',
-              '--rtsp-timeout=30',
-              '--tcp-caching=3000',
-              '--no-audio',
-              '--rtsp-kasenna',
-              '--rtsp-wmserver',
-              '--verbose=2',
-            ]),
-            video: VlcVideoOptions([
-              '--no-video-title-show',
-              '--drop-late-frames',
-              '--skip-frames',
-            ]),
-            audio: VlcAudioOptions([
-              '--no-audio',
-            ]),
-            subtitle: VlcSubtitleOptions([]),
-            rtp: VlcRtpOptions([
-              '--rtsp-tcp',
-              '--rtp-max-src=1',
-            ]),
-          ),
-        );
-        
-        // Add the listener again (same as in _initializeVLC)
-        _vlcViewController?.addListener(() {
-          if (mounted && !_isNavigating && _vlcViewController != null) {
-            final isPlaying = _vlcViewController!.value.isPlaying;
-            final isInitialized = _vlcViewController!.value.isInitialized;
-            final hasError = _vlcViewController!.value.hasError;
-            final playbackState = _vlcViewController!.value.playingState;
-            
-            print('🎬 VLC State Update (Alternative URL):');
-            print('  - Playing: $isPlaying');
-            print('  - Initialized: $isInitialized');
-            print('  - Has Error: $hasError');
-            print('  - Playback State: $playbackState');
-            
-            if (mounted && !_isNavigating) {
-              setState(() {
-                _isConnected = isPlaying && isInitialized && !hasError;
-                _isLoading = !isInitialized && !hasError;
-              });
-            }
-            
-            if (hasError) {
-              final errorMsg = _vlcViewController!.value.errorDescription.isEmpty 
-                  ? 'Unknown VLC error' 
-                  : _vlcViewController!.value.errorDescription;
-              print('🎬 VLC Error with alternative URL: $errorMsg');
-            } else if (isPlaying) {
-              if (mounted && !_isNavigating) {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(
-                    content: Text('🎉 Alternative URL connected successfully!'),
-                    backgroundColor: Colors.green,
-                    duration: Duration(seconds: 3),
-                  ),
-                );
-              }
-            }
-          }
-        });
-        
-        if (mounted && !_isNavigating) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text('🔄 Connecting with alternative URL: ${newUrl.split('@')[1]}'),
-              duration: const Duration(seconds: 3),
-            ),
-          );
-        }
-      }
-    });
-  }
 
   void _initializeTFLite() async {
     print('🚀 RTSP Screen: Starting TFLite initialization...');
@@ -589,9 +374,7 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> with WidgetsBinding
       print('🚀 RTSP Screen: TFLite initialization result: $success');
       
   if (success && mounted && !_isNavigating) {
-        print('🚀 RTSP Screen: TFLite initialization successful, testing model...');
-        // Test the model with a sample image
-        await _testModelWithSampleImage();
+        print('🚀 RTSP Screen: TFLite initialization successful');
         
         // Check if we're in mock mode
         final modelInfo = TFLiteService.getModelInfo();
@@ -644,11 +427,9 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> with WidgetsBinding
     print('🎥 PTZ: Initializing AMCREST IP2M-841B PTZ control...');
     
     // For IP2M-841B, enable PTZ by default since we know it works
-    // Also enable debug mode by default for testing
     if (mounted && !_isNavigating) {
       setState(() {
         _ptzSupported = true;
-        _ptzDebugMode = false; // Enable debug mode by default for testing
       });
     }
     
@@ -710,13 +491,9 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> with WidgetsBinding
                 backgroundColor: Colors.green,
                 duration: const Duration(seconds: 4),
                 action: SnackBarAction(
-                  label: 'Disable Debug',
+                  label: 'OK',
                   textColor: Colors.white,
-                  onPressed: () {
-                    setState(() {
-                      _ptzDebugMode = false;
-                    });
-                  },
+                  onPressed: () {},
                 ),
               ),
             );
@@ -738,60 +515,7 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> with WidgetsBinding
     }
   }
 
-  Future<void> _testModelWithSampleImage() async {
-    try {
-      print('=== Testing Model with Sample Image ===');
-      
-      // Get model info
-      final modelInfo = TFLiteService.getModelInfo();
-      print('Model info: $modelInfo');
-      
-      // Load a sample image from assets to test
-      final ByteData data = await rootBundle.load('assets/images/testing1.png');
-      final Uint8List bytes = data.buffer.asUint8List();
-      
-      print('Testing model with sample image (${bytes.length} bytes)');
-      
-      // Test inference
-      final result = await TFLiteService.runInference(bytes);
-      print('Sample image test result: $result');
-      
-      if (result != null) {
-        print('✅ Model is working! Top prediction: ${result['damageType']} (${result['confidence']})');
-      } else {
-        print('❌ Model test failed - null result');
-      }
-      
-      // Test frame capture functionality after a delay to ensure widget is built
-      Future.delayed(const Duration(seconds: 2), () async {
-        await _testFrameCapture();
-      });
-      
-    } catch (e) {
-      print('❌ Model test error: $e');
-    }
-  }
 
-  Future<void> _testFrameCapture() async {
-    try {
-      print('=== Testing Frame Capture ===');
-      
-      // Test if the GlobalKey is properly attached
-      print('🎥 Player key context: ${_playerKey.currentContext != null}');
-      print('🎥 VLC Controller initialized: ${_vlcViewController?.value.isInitialized ?? false}');
-      print('🎥 VLC Controller playing: ${_vlcViewController?.value.isPlaying ?? false}');
-      
-      final frameBytes = await FrameCaptureService.captureWidget(_playerKey);
-      
-      if (frameBytes != null) {
-        print('✅ Frame capture test successful: ${frameBytes.length} bytes');
-      } else {
-        print('❌ Frame capture test failed');
-      }
-    } catch (e) {
-      print('❌ Frame capture test error: $e');
-    }
-  }
 
   // Replace _toggleAnalysis() and _togglePTZ() with this unified method:
   void _toggleAutoScan() {
@@ -833,11 +557,11 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> with WidgetsBinding
 
   void _startAutoScan() {
     print('🎯 _startAutoScan() called');
-    print('🎯 PTZ Supported: $_ptzSupported, PTZ Debug: $_ptzDebugMode');
+    print('🎯 PTZ Supported: $_ptzSupported');
     print('🎯 VLC Connected: $_isConnected, VLC Loading: $_isLoading');
     
-    if (!_ptzSupported && !_ptzDebugMode) {
-      print('❌ Auto-scan blocked: PTZ not supported and debug mode disabled');
+    if (!_ptzSupported) {
+      print('❌ Auto-scan blocked: PTZ not supported');
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text('Auto-scan requires PTZ camera support'),
@@ -1107,7 +831,7 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> with WidgetsBinding
     try {
       print('🔍 Performing single analysis...');
       
-      // ADD: Check VLC controller state
+      // Check VLC controller state
       if (_vlcViewController == null) {
         print('❌ VLC controller is null');
         return null;
@@ -1118,117 +842,59 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> with WidgetsBinding
       print('  - isInitialized: ${_vlcViewController!.value.isInitialized}');
       print('  - hasError: ${_vlcViewController!.value.hasError}');
       
-      // Small delay to ensure frame is ready (increased from 200ms to 500ms)
-      await Future.delayed(const Duration(milliseconds: 500));
+      // Small delay to ensure frame is ready
+      await Future.delayed(const Duration(milliseconds: 100));
       
-      // Capture frame from VLC player
+      // Capture frame from VLC player (UI thread only for widget capture)
       print('📸 Attempting to capture frame from VLC widget');
       final frameBytes = await FrameCaptureService.captureWidget(_playerKey);
       
-      if (frameBytes != null) {
-        print('📸 Frame captured successfully: ${frameBytes.length} bytes');
-        
-        // ADD: Save captured frame for debugging
-        try {
-          final directory = await getApplicationDocumentsDirectory();
-          final debugFile = File('${directory.path}/debug_frame_${DateTime.now().millisecondsSinceEpoch}.png');
-          await debugFile.writeAsBytes(frameBytes);
-          print('🔍 DEBUG: Frame saved to ${debugFile.path} for inspection');
-        } catch (e) {
-          print('Warning: Could not save debug frame: $e');
-        }
-        
-        // Run AI inference
-        print('🤖 Running AI inference on captured frame');
-        final result = await TFLiteService.runInference(frameBytes);
-        print('🤖 AI inference result: $result');
-        
-        // ADD: More detailed result checking
-        if (result == null) {
-          print('❌ TFLiteService.runInference returned NULL');
-          
-          // Check if TFLite is properly initialized
-          final modelInfo = TFLiteService.getModelInfo();
-          print('🤖 Model info: $modelInfo');
-          
-          return null;
-        }
-        
-        print('🤖 Result validation:');
-        print('  - Has isDamageDetected key: ${result.containsKey('isDamageDetected')}');
-        print('  - isDamageDetected value: ${result['isDamageDetected']}');
-        print('  - Result keys: ${result.keys.toList()}');
-        
-        // NEW: Enhanced handling for multiple detections
-        if (result.containsKey('allDetections') && result['allDetections'] is List) {
-          final allDetections = result['allDetections'] as List;
-          print('🤖 Multiple detections found: ${allDetections.length}');
-          
-          // Process each detection
-          for (int i = 0; i < allDetections.length; i++) {
-            final detection = allDetections[i];
-            print('🤖 Detection $i: ${detection['damageType']} (${(detection['confidence'] * 100).toInt()}%)');
-          }
-          
-          // Update statistics for multiple detections
-          if (mounted) {
-            setState(() {
-              _totalFramesAnalyzed++;
-              
-              // Count how many are actual damage (excluding only "No Damage" results)
-              final validDetections = allDetections.where((det) => 
-                det['damageType'] != 'No Damage'
-              ).toList();
-              
-              // Save ALL detections to history regardless of confidence
-              for (var detection in allDetections) {
-                print('💾 Saving ALL detections to history: ${detection['damageType']} (${(detection['confidence'] * 100).toInt()}%)');
-                _saveDetectionToHistory(detection, frameBytes);
-              }
-              
-              if (validDetections.isNotEmpty) {
-                _damagesDetected += validDetections.length;
-              }
-              
-              _lastAnalysisResult = result; // Store the latest result
-            });
-          }
-          
-          return result;
-        }
-        // Existing single detection handling
-        else if (result['isDamageDetected'] != null) {
-          print('🤖 Single detection analysis: ${result['damageType']} (${(result['confidence'] * 100).toInt()}%)');
-          
-          // Update statistics
-          if (mounted) {
-            setState(() {
-              _totalFramesAnalyzed++;
-              if (result['isDamageDetected'] == true) {
-                _damagesDetected++;
-                
-                // Save ALL detections to history regardless of confidence
-                print('💾 Saving ALL detections to history: ${result['damageType']} (${(result['confidence'] * 100).toInt()}%)');
-                _saveDetectionToHistory(result, frameBytes);
-              }
-              _lastAnalysisResult = result; // Store the latest result
-            });
-          }
-          
-          return result;
-        } else {
-          print('🤖 Analysis returned result without isDamageDetected field: $result');
-          return null;
-        }
-      } else {
+      if (frameBytes == null) {
         print('❌ Frame capture failed - returned null');
-        print('❌ Widget key current context: ${_playerKey.currentContext}');
-        print('❌ Widget key current widget: ${_playerKey.currentWidget}');
         return null;
       }
-    } catch (e) {
+      
+      print('📸 Frame captured successfully: ${frameBytes.length} bytes');
+      
+      // Run AI inference on main isolate (TFLite uses native platform channels)
+      // Note: TFLite inference is already optimized at the native level
+      // Moving it to a background isolate would fail due to platform channel limitations
+      print('🤖 Running AI inference on main isolate');
+      final result = await TFLiteService.runInference(frameBytes);
+      print('🤖 AI inference result: $result');
+      
+      if (result == null) {
+        print('❌ TFLiteService.runInference returned NULL');
+        final modelInfo = TFLiteService.getModelInfo();
+        print('🤖 Model info: $modelInfo');
+        return null;
+      }
+      
+      print('🤖 Result validation:');
+      print('  - Has isDamageDetected key: ${result.containsKey('isDamageDetected')}');
+      print('  - isDamageDetected value: ${result['isDamageDetected']}');
+      
+      // Update statistics with debounced setState
+      if (mounted && !_isNavigating) {
+        _debouncedSetState(() {
+          _totalFramesAnalyzed++;
+          if (result['isDamageDetected'] == true) {
+            _damagesDetected++;
+          }
+          _lastAnalysisResult = result;
+        });
+      }
+      
+      // Save detection to history in background if damage detected
+      if (result['isDamageDetected'] == true) {
+        // Fire and forget - don't await
+        unawaited(_saveDetectionToHistoryAsync(result, frameBytes));
+      }
+      
+      return result;
+    } catch (e, stackTrace) {
       print('❌ Analysis error: $e');
-      print('❌ Stack trace: ${StackTrace.current}');
+      print('❌ Stack trace: $stackTrace');
       return null;
     }
   }
@@ -1236,10 +902,10 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> with WidgetsBinding
   // Simplified camera movement method
   Future<bool> _performCameraMovement() async {
     print('🎬 Auto-scan: ===== CAMERA MOVEMENT START =====');
-    print('🎬 Auto-scan: PTZ supported: $_ptzSupported, Debug mode: $_ptzDebugMode, Is moving: $_isMovingCamera');
+    print('🎬 Auto-scan: PTZ supported: $_ptzSupported, Is moving: $_isMovingCamera');
     
-    if (!_ptzSupported && !_ptzDebugMode) {
-      print('🎬 Auto-scan: ❌ PTZ not supported and not in debug mode - BLOCKING MOVEMENT');
+    if (!_ptzSupported) {
+      print('🎬 Auto-scan: ❌ PTZ not supported - BLOCKING MOVEMENT');
       return false;
     }
 
@@ -1256,34 +922,27 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> with WidgetsBinding
       
       print('🎬 Auto-scan: Starting movement $_totalPTZMovements');
       
-      if (_ptzDebugMode) {
-        print('� Auto-scan: �🎥 PTZ Debug: Simulating movement $_totalPTZMovements');
-        await Future.delayed(const Duration(seconds: 2)); // Longer delay for more realistic simulation
-        success = true;
-        print('🎬 Auto-scan: ✅ Debug movement completed successfully');
-      } else {
-        print('🎬 Auto-scan: ➡️ PTZ: Moving RIGHT (movement $_totalPTZMovements)');
-        print('� Auto-scan: RTSP URL: ${widget.rtspUrl}');
+      print(' Auto-scan: ➡️ PTZ: Moving RIGHT (movement $_totalPTZMovements)');
+      print('🎬 Auto-scan: RTSP URL: ${widget.rtspUrl}');
         
-        // Add retry logic for failed movements
-        for (int attempt = 1; attempt <= 2; attempt++) {
-          print('🎬 Auto-scan: Movement attempt $attempt/2');
-          success = await PTZService.panRight(widget.rtspUrl, speed: 4);
-          
-          if (success) {
-            print('🎬 Auto-scan: ✅ Movement successful on attempt $attempt');
-            break;
-          } else {
-            print('🎬 Auto-scan: ❌ Movement failed on attempt $attempt');
-            if (attempt < 2) {
-              print('🎬 Auto-scan: Waiting 1 second before retry...');
-              await Future.delayed(Duration(seconds: 1));
-            }
+      // Add retry logic for failed movements
+      for (int attempt = 1; attempt <= 2; attempt++) {
+        print('🎬 Auto-scan: Movement attempt $attempt/2');
+        success = await PTZService.panRight(widget.rtspUrl, speed: 4);
+        
+        if (success) {
+          print('🎬 Auto-scan: ✅ Movement successful on attempt $attempt');
+          break;
+        } else {
+          print('🎬 Auto-scan: ❌ Movement failed on attempt $attempt');
+          if (attempt < 2) {
+            print('🎬 Auto-scan: Waiting 1 second before retry...');
+            await Future.delayed(Duration(seconds: 1));
           }
         }
-        
-        print('🎬 Auto-scan: Final PTZ panRight result: $success');
       }
+      
+      print('🎬 Auto-scan: Final PTZ panRight result: $success');
 
       if (success) {
         print('🎬 Auto-scan: ✅ PTZ: Movement $_totalPTZMovements completed successfully');
@@ -1368,7 +1027,7 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> with WidgetsBinding
 
   /// Manual PTZ control for IP2M-841B
   Future<void> _manualPTZControl(PTZDirection direction) async {
-    if (!_ptzSupported && !_ptzDebugMode) {
+    if (!_ptzSupported) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text('PTZ control is not supported by this camera'),
@@ -1396,14 +1055,8 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> with WidgetsBinding
       bool success = false;
       String directionName = direction.name.toUpperCase();
       
-      if (_ptzDebugMode) {
-        // Simulate movement in debug mode
-        print('🎥 PTZ Debug: Simulating movement $directionName');
-        await Future.delayed(const Duration(seconds: 1));
-        success = true;
-      } else {
-        // Real IP2M-841B PTZ movement with working commands
-        print('🎯 IP2M-841B Manual PTZ: Executing $directionName movement');
+      // Real IP2M-841B PTZ movement with working commands
+      print('🎯 IP2M-841B Manual PTZ: Executing $directionName movement');
         
         switch (direction) {
           case PTZDirection.left:
@@ -1425,18 +1078,15 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> with WidgetsBinding
             break;
         }
         
-        // Add small delay after movement for stabilization
-        if (success) {
-          await Future.delayed(const Duration(milliseconds: 500));
-        }
+      // Add small delay after movement for stabilization
+      if (success) {
+        await Future.delayed(const Duration(milliseconds: 500));
       }
       
       if (success && mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text(_ptzDebugMode 
-                ? '🔧 Debug: Camera moved $directionName' 
-                : '📹 Camera moved $directionName'),
+            content: Text('📹 Camera moved $directionName'),
             backgroundColor: Colors.green,
             duration: const Duration(seconds: 1),
           ),
@@ -1511,26 +1161,17 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> with WidgetsBinding
 
       bool calibrationSuccess = false;
 
-      if (_ptzDebugMode) {
-        // Simulate simple calibration in debug mode
-        print('🎭 Debug Mode: Simulating right → left calibration...');
-        await Future.delayed(const Duration(seconds: 2));
-        calibrationSuccess = true;
-      } else {
-        // Perform actual simple camera calibration
-        print('🔧 Performing simple right → left calibration...');
-        calibrationSuccess = await PTZService.quickCalibrateCamera(widget.rtspUrl);
-      }
+      // Perform actual camera calibration
+      print('🔧 Performing camera calibration...');
+      calibrationSuccess = await PTZService.quickCalibrateCamera(widget.rtspUrl);
 
       if (mounted) {
         if (calibrationSuccess) {
           ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text(_ptzDebugMode 
-                  ? '✅ Debug calibration completed (Right → Left)!' 
-                  : '✅ AMCREST camera calibrated (Right → Left)!'),
+            const SnackBar(
+              content: Text('✅ AMCREST camera calibrated (Right → Left)!'),
               backgroundColor: Colors.green,
-              duration: const Duration(seconds: 3),
+              duration: Duration(seconds: 3),
             ),
           );
         } else {
@@ -2426,6 +2067,113 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> with WidgetsBinding
     }
   }
 
+  /// Debounced setState to reduce UI thread pressure and prevent frame drops
+  /// Batches multiple state updates together within a 250ms window
+  void _debouncedSetState(void Function() fn) {
+    if (!mounted || _isNavigating) return;
+    
+    final now = DateTime.now();
+    
+    // Cancel any pending update
+    _stateUpdateTimer?.cancel();
+    
+    // If we updated recently, schedule for later
+    if (now.difference(_lastStateUpdate) < const Duration(milliseconds: 250)) {
+      _pendingStateUpdate = true;
+      _stateUpdateTimer = Timer(const Duration(milliseconds: 250), () {
+        if (mounted && !_isNavigating && _pendingStateUpdate) {
+          setState(fn);
+          _lastStateUpdate = DateTime.now();
+          _pendingStateUpdate = false;
+        }
+      });
+    } else {
+      // Update immediately
+      setState(fn);
+      _lastStateUpdate = now;
+      _pendingStateUpdate = false;
+    }
+  }
+  
+  /// Helper to save detection history in background without blocking UI
+  Future<void> _saveDetectionToHistoryAsync(
+    Map<String, dynamic> result,
+    Uint8List frameBytes,
+  ) async {
+    try {
+      print('💾 Starting to save detection image...');
+      print('💾 Frame bytes length: ${frameBytes.length}');
+      print('💾 Damage type: ${result['damageType']}');
+      print('💾 Confidence: ${result['confidence']}');
+      
+      // Get frames directory path on main isolate (path_provider only works on main isolate)
+      final directory = await getApplicationDocumentsDirectory();
+      final framesDirectoryPath = '${directory.path}/frames';
+      print('💾 Frames directory: $framesDirectoryPath');
+      
+      // Save image in background isolate using compute service
+      final savedImagePath = await ComputeService.saveImageInBackground(
+        imageBytes: frameBytes,
+        damageType: result['damageType'] ?? 'Unknown',
+        confidence: (result['confidence'] as num?)?.toDouble() ?? 0.0,
+        framesDirectoryPath: framesDirectoryPath,
+      );
+      
+      print('💾 Image saved to: "$savedImagePath" (length: ${savedImagePath.length})');
+      
+      if (savedImagePath.isEmpty) {
+        print('❌ WARNING: Image path is empty after save attempt!');
+      }
+
+      final detectionData = {
+        'damageType': result['damageType'],
+        'confidence': result['confidence'],
+        'imagePath': savedImagePath,
+        'timestamp': DateTime.now().millisecondsSinceEpoch,
+        'boundingBox': result['boundingBox'] ?? {
+          'x': 0.3,
+          'y': 0.3,
+          'width': 0.4,
+          'height': 0.4,
+        },
+      };
+
+      // Add to history with debounced setState
+      if (mounted && !_isNavigating) {
+        _debouncedSetState(() {
+          _detectionHistory.add(detectionData);
+        });
+      }
+
+      print('💾 Detection saved to history. Total: ${_detectionHistory.length}');
+      print('💾 Saved detection data: $detectionData');
+    } catch (e, stackTrace) {
+      print('❌ Error saving detection: $e');
+      print('❌ Stack trace: $stackTrace');
+      
+      // Still add detection to history even if image save fails
+      // but with empty image path
+      final detectionData = {
+        'damageType': result['damageType'],
+        'confidence': result['confidence'],
+        'imagePath': '', // Empty path since save failed
+        'timestamp': DateTime.now().millisecondsSinceEpoch,
+        'boundingBox': result['boundingBox'] ?? {
+          'x': 0.3,
+          'y': 0.3,
+          'width': 0.4,
+          'height': 0.4,
+        },
+      };
+      
+      if (mounted && !_isNavigating) {
+        _debouncedSetState(() {
+          _detectionHistory.add(detectionData);
+        });
+      }
+    }
+  }
+
 
 
   @override
@@ -2435,11 +2183,16 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> with WidgetsBinding
     // Remove lifecycle observer
     WidgetsBinding.instance.removeObserver(this);
     
-    // Cancel timers directly without calling _stopAutoScan() to avoid setState on disposed widget
+    // Cancel all timers
     _autoScanTimer?.cancel();
     _autoScanTimer = null;
     _ptzMovementTimer?.cancel();
     _ptzMovementTimer = null;
+    _stateUpdateTimer?.cancel();
+    _stateUpdateTimer = null;
+    
+    // Cancel any pending work
+    WorkManager().cancelAll();
     
     print('🔚 Timers cancelled in dispose() without setState calls');
     
@@ -2838,7 +2591,7 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> with WidgetsBinding
                       const SizedBox(height: 16),
                       
                       // PTZ Controls (if supported or debug mode)
-                      if (_ptzSupported || _ptzDebugMode) ...[
+                      if (_ptzSupported) ...[
                         Row(
                           children: [
                             Expanded(
@@ -3092,7 +2845,7 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> with WidgetsBinding
                       const SizedBox(height: 16),
                       
                       // ADD: Manual Test Buttons
-                     Row(
+                    /* Row(
                         children: [
                           Expanded(
                             child: _buildControlCard(
@@ -3112,7 +2865,7 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> with WidgetsBinding
                                ),
                           ),
                         ],
-                      ),
+                      ),*/
                       
                       const SizedBox(height: 32),
                       
@@ -3601,7 +3354,7 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> with WidgetsBinding
   
   /// Perform zoom control for IP2M-841B camera
   Future<void> _performZoom(bool zoomIn) async {
-    if (!_ptzSupported && !_ptzDebugMode) {
+    if (!_ptzSupported) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text('PTZ control is not supported by this camera'),
@@ -3629,30 +3382,22 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> with WidgetsBinding
       bool success = false;
       String action = zoomIn ? 'Zoom In' : 'Zoom Out';
       
-      if (_ptzDebugMode) {
-        print('🎥 PTZ Debug: Simulating $action');
-        await Future.delayed(const Duration(seconds: 1));
-        success = true;
+      print('🎯 IP2M-841B Zoom: Executing $action');
+      
+      if (zoomIn) {
+        success = await PTZService.zoomIn(widget.rtspUrl, multiple: 2);
       } else {
-        print('🎯 IP2M-841B Zoom: Executing $action');
-        
-        if (zoomIn) {
-          success = await PTZService.zoomIn(widget.rtspUrl, multiple: 2);
-        } else {
-          success = await PTZService.zoomOut(widget.rtspUrl, multiple: 2);
-        }
-        
-        if (success) {
-          await Future.delayed(const Duration(milliseconds: 500));
-        }
+        success = await PTZService.zoomOut(widget.rtspUrl, multiple: 2);
+      }
+      
+      if (success) {
+        await Future.delayed(const Duration(milliseconds: 500));
       }
       
       if (success && mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(_ptzDebugMode 
-                ? '🔧 Debug: $action completed' 
-                : '🔍 Camera $action completed'),
+          const SnackBar(
+            content: Text('🔍 Camera zoom completed'),
             backgroundColor: Colors.green,
             duration: const Duration(seconds: 1),
           ),
