@@ -56,12 +56,11 @@ dependency_overrides:
   tflite_flutter: ^0.11.0
   ffi: ^2.0.1
 
-
-
 dev_dependencies:
   flutter_test:
     sdk: flutter
   sqflite_common_ffi: ^2.3.6
+  flutter_launcher_icons: ^0.9.3
 
   # The "flutter_lints" package below contains a set of recommended lints to
   # encourage good coding practices. The lint set provided by the package is
@@ -112,3 +111,11 @@ flutter:
   #
   # For details regarding fonts from package dependencies,
   # see https://flutter.dev/to/font-from-package
+
+# Flutter Launcher Icons Configuration
+flutter_launcher_icons:
+  android: true
+  ios: false
+  image_path: "assets/images/Logo.png"
+  adaptive_icon_background: "#FFFFFF"
+  adaptive_icon_foreground: "assets/images/Logo.png"

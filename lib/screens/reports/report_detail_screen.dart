@@ -88,12 +88,6 @@ class _ReportDetailScreenState extends State<ReportDetailScreen> {
           backgroundColor: Colors.white,
           foregroundColor: Colors.black87,
           elevation: 0,
-          actions: [
-            IconButton(
-              icon: const Icon(Icons.share),
-              onPressed: () => _shareReport(),
-            ),
-          ],
         ),
         body: SafeArea(
           child: SingleChildScrollView(
@@ -814,11 +808,6 @@ class _ReportDetailScreenState extends State<ReportDetailScreen> {
 
   String _formatDate(DateTime date) {
     return '${date.day}/${date.month}/${date.year} ${date.hour}:${date.minute.toString().padLeft(2, '0')}';
-  }
-
-  void _shareReport() {
-    // TODO: Implement report sharing functionality
-    // This could export to PDF, email, etc.
   }
 
   Widget _buildFinishButton(BuildContext context) {
