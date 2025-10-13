@@ -1,6 +1,7 @@
 import 'package:path_provider/path_provider.dart';
 import 'dart:io';
 import 'dart:typed_data';
+import 'dart:async';
 import 'package:flutter/services.dart';
 import 'package:flutter/foundation.dart';
 import 'package:tflite_flutter/tflite_flutter.dart';
@@ -11,10 +12,11 @@ class TFLiteService {
   static List<String>? _labels;
   static bool _isInitialized = false;
   static bool _mockMode = false; // Add mock mode for debugging
-  static bool _isQuantized = false; // Track model type
+  static bool _isQuantized = false; // Track quantized model type
+  static bool _isFloat16 = false;   // Track float16 model type
 
   // Model configuration - UPDATE THIS PATH FOR YOUR FLOAT32 MODEL
-  static const String modelPath = 'assets/models/RealDamageDetection32x960.tflite'; // Change to float32 model path
+  static const String modelPath = 'assets/models/RealDamageDetection16x960.tflite'; // Change to float32 model path
   static const String labelsPath = 'assets/models/labels.txt';
   static int inputSize = 960; // Dynamic input size - will be updated from model
 
@@ -75,12 +77,15 @@ class TFLiteService {
                          (inputTypeVal == TfLiteType.kTfLiteInt8) ||
                          (outputTypeVal == TfLiteType.kTfLiteUInt8) ||
                          (outputTypeVal == TfLiteType.kTfLiteInt8);
+          _isFloat16 = (inputTypeVal == TfLiteType.kTfLiteFloat16) ||
+                       (outputTypeVal == TfLiteType.kTfLiteFloat16);
         } catch (e) {
           // Fallback to older string-based heuristic if direct comparison fails
           _isQuantized = inputTensor.type.toString().contains('uint8') ||
                         inputTensor.type.toString().contains('int8');
         }
-        print('🔧 Model type detected: ${_isQuantized ? "Quantized (uint8/int8)" : "Float32"}');
+        print('🔧 Model type detected: '
+              '${_isQuantized ? "Quantized (uint8/int8)" : _isFloat16 ? "Float16" : "Float32"}');
         // Helpful debug: print structured model info for quick verification
         print('🔎 Model info: ${getModelInfo()}');
         
@@ -225,8 +230,21 @@ class TFLiteService {
 
       print('🔄 Running ${_isQuantized ? "quantized" : "float32"} model inference...');
       
-      // Run inference (this is fast, ~50-100ms)
-      _interpreter!.run(processedImage, output);
+      // Run inference with timeout protection (prevents ANR)
+      try {
+        await Future(() {
+          _interpreter!.run(processedImage, output);
+        }).timeout(
+          const Duration(seconds: 4),
+          onTimeout: () {
+            print('⚠️ AI inference timed out after 4 seconds (preventing ANR)');
+            throw TimeoutException('Inference timeout');
+          },
+        );
+      } on TimeoutException {
+        print('❌ Inference aborted due to timeout');
+        return null;
+      }
       
       // Process output based on model type
       List<double> flatOutput = _isQuantized 
@@ -234,6 +252,7 @@ class TFLiteService {
           : _processFloat32Output(output, outputTensorShape);
       
       print('Raw output sample (first 10 values): ${flatOutput.take(10).toList()}');
+      print('Flat output length: ${flatOutput.length}');
 
       // Process results
       final results = _processResults(flatOutput, outputTensorShape);

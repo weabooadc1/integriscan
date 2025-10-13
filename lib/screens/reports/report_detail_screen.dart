@@ -5,6 +5,7 @@ import 'package:integriscan/services/recommendations_service.dart';
 import 'package:integriscan/services/firebase_storage_service.dart';
 import 'package:integriscan/services/report_service.dart';
 import 'package:integriscan/component/primarybutton.dart';
+import 'package:integriscan/database/database_helper.dart';
 
 import 'dart:io';
 
@@ -24,12 +25,14 @@ class ReportDetailScreen extends StatefulWidget {
 
 class _ReportDetailScreenState extends State<ReportDetailScreen> {
   bool _isInitializing = true;
+  late String _currentSessionName;
   
   @override
   void initState() {
     super.initState();
     // Initialize immediately without delay to prevent timing issues
     print('🔍 ReportDetailScreen: Initializing immediately...');
+    _currentSessionName = widget.report.sessionName;
     _isInitializing = false;
     print('🔍 ReportDetailScreen: Initialization complete, ready to build content');
   }
@@ -84,10 +87,17 @@ class _ReportDetailScreenState extends State<ReportDetailScreen> {
         return Scaffold(
         backgroundColor: Colors.grey[50],
         appBar: AppBar(
-          title: Text(widget.report.sessionName),
+          title: Text(_currentSessionName),
           backgroundColor: Colors.white,
           foregroundColor: Colors.black87,
           elevation: 0,
+          actions: [
+            IconButton(
+              icon: const Icon(Icons.edit),
+              tooltip: 'Rename Session',
+              onPressed: () => _showRenameSessionDialog(context),
+            ),
+          ],
         ),
         body: SafeArea(
           child: SingleChildScrollView(
@@ -808,6 +818,89 @@ class _ReportDetailScreenState extends State<ReportDetailScreen> {
 
   String _formatDate(DateTime date) {
     return '${date.day}/${date.month}/${date.year} ${date.hour}:${date.minute.toString().padLeft(2, '0')}';
+  }
+
+  Future<void> _showRenameSessionDialog(BuildContext context) async {
+    final controller = TextEditingController(text: _currentSessionName);
+    
+    return showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Rename Session'),
+        content: TextField(
+          controller: controller,
+          decoration: const InputDecoration(
+            labelText: 'Session Name',
+            hintText: 'Enter new session name',
+            border: OutlineInputBorder(),
+          ),
+          autofocus: true,
+          maxLength: 50,
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () async {
+              final newName = controller.text.trim();
+              if (newName.isNotEmpty && newName != _currentSessionName) {
+                // Update the session name in the database directly
+                try {
+                  final db = DatabaseHelper();
+                  await db.database.then((database) async {
+                    await database.update(
+                      'reports',
+                      {'sessionName': newName},
+                      where: 'id = ?',
+                      whereArgs: [widget.report.id],
+                    );
+                  });
+                  
+                  setState(() {
+                    _currentSessionName = newName;
+                  });
+                  
+                  if (mounted) {
+                    Navigator.pop(context);
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(
+                        content: Text('Session name updated successfully'),
+                        backgroundColor: Colors.green,
+                        duration: Duration(seconds: 2),
+                      ),
+                    );
+                  }
+                } catch (e) {
+                  if (mounted) {
+                    Navigator.pop(context);
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        content: Text('Failed to update session name: $e'),
+                        backgroundColor: Colors.red,
+                        duration: const Duration(seconds: 3),
+                      ),
+                    );
+                  }
+                }
+              } else if (newName.isEmpty) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                    content: Text('Session name cannot be empty'),
+                    backgroundColor: Colors.orange,
+                    duration: Duration(seconds: 2),
+                  ),
+                );
+              } else {
+                Navigator.pop(context);
+              }
+            },
+            child: const Text('Save'),
+          ),
+        ],
+      ),
+    );
   }
 
   Widget _buildFinishButton(BuildContext context) {

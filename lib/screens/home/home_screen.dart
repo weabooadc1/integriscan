@@ -7,6 +7,13 @@ import 'package:integriscan/screens/reports/reports_list_screen.dart';
 import 'package:integriscan/screens/verification/my_flagged_reports_screen.dart';
 import 'package:provider/provider.dart';
 
+// ⚙️ CONFIGURATION: Set your default RTSP camera URL here
+// Set to null to show dialog, or provide URL to auto-connect
+const String? DEFAULT_RTSP_URL = 'rtsp://admin:admin123@192.168.1.22:554/cam/realmonitor?channel=1&subtype=0';
+// Examples:
+// const String? DEFAULT_RTSP_URL = 'rtsp://admin:password@192.168.1.100:554/stream';
+// const String? DEFAULT_RTSP_URL = null; // Show dialog
+
 class HomeScreen extends StatelessWidget {
   const HomeScreen({super.key});
   
@@ -190,7 +197,18 @@ class HomeScreen extends StatelessWidget {
                                     icon: Icons.document_scanner,
                                     color: Colors.blue,
                                     onTap: () {
-                                      _showRtspUrlDialog(context);
+                                      // Auto-connect if default URL is configured
+                                      if (DEFAULT_RTSP_URL != null && DEFAULT_RTSP_URL!.isNotEmpty) {
+                                        Navigator.push(
+                                          context,
+                                          MaterialPageRoute(
+                                            builder: (context) => RtspStreamScreen(rtspUrl: DEFAULT_RTSP_URL!),
+                                          ),
+                                        );
+                                      } else {
+                                        // Show dialog if no default URL
+                                        _showRtspUrlDialog(context);
+                                      }
                                     },
                                   ),
                                 ),

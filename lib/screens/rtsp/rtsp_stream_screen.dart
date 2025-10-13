@@ -2592,7 +2592,7 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> with WidgetsBinding
                       
                       // PTZ Controls (if supported or debug mode)
                       if (_ptzSupported) ...[
-                        Row(
+                        /*Row(
                           children: [
                             Expanded(
                               child: _buildControlCard(
@@ -2607,7 +2607,7 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> with WidgetsBinding
                               child: _buildPTZStatusCard(),
                             ),
                           ],
-                        ),
+                        ),*/
                         
                         const SizedBox(height: 16),
                         
@@ -2736,7 +2736,7 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> with WidgetsBinding
                               const SizedBox(height: 16),
                               
                               // Zoom Controls for IP2M-841B
-                              Container(
+                              /* Container(
                                 padding: const EdgeInsets.all(12),
                                 decoration: BoxDecoration(
                                   color: Colors.blue.withOpacity(0.05),
@@ -2781,7 +2781,7 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> with WidgetsBinding
                                     ),
                                   ],
                                 ),
-                              ),
+                              ),*/
                               
                               const SizedBox(height: 16),
                               
@@ -2845,7 +2845,7 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> with WidgetsBinding
                       const SizedBox(height: 16),
                       
                       // ADD: Manual Test Buttons
-                    /* Row(
+                     Row(
                         children: [
                           Expanded(
                             child: _buildControlCard(
@@ -2865,7 +2865,7 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> with WidgetsBinding
                                ),
                           ),
                         ],
-                      ),*/
+                      ),
                       
                       const SizedBox(height: 32),
                       
