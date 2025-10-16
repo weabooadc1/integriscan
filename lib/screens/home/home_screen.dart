@@ -5,14 +5,14 @@ import 'package:integriscan/screens/profile/profile_screen.dart';
 import 'package:integriscan/screens/rtsp/rtsp_stream_screen.dart';
 import 'package:integriscan/screens/reports/reports_list_screen.dart';
 import 'package:integriscan/screens/verification/my_flagged_reports_screen.dart';
+import 'package:integriscan/screens/help/help_screen.dart';
 import 'package:provider/provider.dart';
 
-// ⚙️ CONFIGURATION: Set your default RTSP camera URL here
-// Set to null to show dialog, or provide URL to auto-connect
-const String? DEFAULT_RTSP_URL = 'rtsp://admin:admin123@192.168.1.22:554/cam/realmonitor?channel=1&subtype=0';
-// Examples:
-// const String? DEFAULT_RTSP_URL = 'rtsp://admin:password@192.168.1.100:554/stream';
-// const String? DEFAULT_RTSP_URL = null; // Show dialog
+
+const List<String> DEFAULT_RTSP_URLS = [
+'rtsp://admin:admin123@192.168.100.3:554/cam/realmonitor?channel=1&subtype=0',  
+];
+
 
 class HomeScreen extends StatelessWidget {
   const HomeScreen({super.key});
@@ -197,16 +197,21 @@ class HomeScreen extends StatelessWidget {
                                     icon: Icons.document_scanner,
                                     color: Colors.blue,
                                     onTap: () {
-                                      // Auto-connect if default URL is configured
-                                      if (DEFAULT_RTSP_URL != null && DEFAULT_RTSP_URL!.isNotEmpty) {
+                                      // Auto-connect if default URLs are configured
+                                      if (DEFAULT_RTSP_URLS.isNotEmpty) {
                                         Navigator.push(
                                           context,
                                           MaterialPageRoute(
-                                            builder: (context) => RtspStreamScreen(rtspUrl: DEFAULT_RTSP_URL!),
+                                            builder: (context) => RtspStreamScreen(
+                                              rtspUrl: DEFAULT_RTSP_URLS.first,
+                                              fallbackUrls: DEFAULT_RTSP_URLS.length > 1 
+                                                ? DEFAULT_RTSP_URLS.sublist(1) 
+                                                : [],
+                                            ),
                                           ),
                                         );
                                       } else {
-                                        // Show dialog if no default URL
+                                        // Show dialog if no default URLs
                                         _showRtspUrlDialog(context);
                                       }
                                     },
@@ -280,10 +285,10 @@ class HomeScreen extends StatelessWidget {
                                     icon: Icons.help_outline,
                                     color: Colors.teal,
                                     onTap: () {
-                                      ScaffoldMessenger.of(context).showSnackBar(
-                                        const SnackBar(
-                                          content: Text('Help functionality coming soon!'),
-                                          behavior: SnackBarBehavior.floating,
+                                      Navigator.push(
+                                        context,
+                                        MaterialPageRoute(
+                                          builder: (context) => const HelpScreen(),
                                         ),
                                       );
                                     },

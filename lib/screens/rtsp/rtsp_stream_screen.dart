@@ -21,7 +21,13 @@ import 'dart:typed_data';
 
 class RtspStreamScreen extends StatefulWidget {
   final String rtspUrl;
-  const RtspStreamScreen({super.key, required this.rtspUrl});
+  final List<String> fallbackUrls;
+  
+  const RtspStreamScreen({
+    super.key, 
+    required this.rtspUrl,
+    this.fallbackUrls = const [],
+  });
 
   @override
   State<RtspStreamScreen> createState() => _RtspStreamScreenState();
@@ -36,12 +42,23 @@ enum AutoScanState {
   stabilizing
 }
 
+// Enum for selecting scan pattern type
+enum ScanPatternType {
+  continuous,  // Original pattern: continuous right movement
+  upDownRight, // Custom pattern: up → down (skip) → right
+}
+
 class _RtspStreamScreenState extends State<RtspStreamScreen> with WidgetsBindingObserver {
   VlcPlayerController? _vlcViewController;
   bool _isPlaying = true;
   bool _isConnected = false;
   bool _isLoading = true;
   bool _isAnalyzing = false;
+  
+  // RTSP Fallback Support
+  String _currentRtspUrl = '';
+  int _currentUrlIndex = 0;
+  List<String> _allRtspUrls = [];
   
   // Redesigned Auto-scan state management
   bool _autoScanEnabled = false;
@@ -65,6 +82,20 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> with WidgetsBinding
   int _totalPTZMovements = 0;
   Timer? _ptzMovementTimer;
   
+  // Custom scan pattern state
+  ScanPatternType _selectedScanPattern = ScanPatternType.continuous;
+  int _currentPatternIndex = 0;
+  
+  // Dynamic scan pattern based on selection
+  List<PTZDirection> get _scanPattern {
+    switch (_selectedScanPattern) {
+      case ScanPatternType.continuous:
+        return [PTZDirection.right]; // Original: continuous right movement
+      case ScanPatternType.upDownRight:
+        return PTZScanPattern.upDownRightScan; // Custom: up → down → right
+    }
+  }
+  
   // Bounding box display timing - removed since handled by auto-scan states
   bool _showBoundingBoxes = true;
   // Navigation guard to prevent setState while navigating away
@@ -87,6 +118,11 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> with WidgetsBinding
     super.initState();
     // Add lifecycle observer for memory management
     WidgetsBinding.instance.addObserver(this);
+    
+    // Initialize RTSP URLs list (primary + fallbacks)
+    _allRtspUrls = [widget.rtspUrl, ...widget.fallbackUrls];
+    _currentRtspUrl = widget.rtspUrl;
+    _currentUrlIndex = 0;
     
     _validateRtspUrl(); // Validate URL format first
     
@@ -237,11 +273,11 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> with WidgetsBinding
   }
 
   void _initializeVLC() {
-    print('🎬 Initializing VLC with RTSP URL: ${widget.rtspUrl}');
+    print('🎬 Initializing VLC with RTSP URL (${_currentUrlIndex + 1}/${_allRtspUrls.length}): $_currentRtspUrl');
     
     try {
       _vlcViewController = VlcPlayerController.network(
-        widget.rtspUrl,
+        _currentRtspUrl,
         hwAcc: HwAcc.full,
         autoPlay: true,
         options: VlcPlayerOptions(
@@ -346,6 +382,46 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> with WidgetsBinding
   /// Retry RTSP connection
   void _retryConnection() {
     print('🔄 Retrying RTSP connection...');
+    
+    // Try next URL if available
+    if (_currentUrlIndex + 1 < _allRtspUrls.length) {
+      _currentUrlIndex++;
+      _currentRtspUrl = _allRtspUrls[_currentUrlIndex];
+      print('🔄 Trying fallback URL (${_currentUrlIndex + 1}/${_allRtspUrls.length}): $_currentRtspUrl');
+      
+      if (mounted && !_isNavigating) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Primary URL failed. Trying backup camera (${_currentUrlIndex + 1}/${_allRtspUrls.length})...'),
+            backgroundColor: Colors.orange,
+            duration: const Duration(seconds: 3),
+          ),
+        );
+      }
+    } else {
+      // All URLs tried, reset to first URL and retry
+      _currentUrlIndex = 0;
+      _currentRtspUrl = _allRtspUrls[0];
+      print('🔄 All URLs tried. Resetting to primary URL and retrying...');
+      
+      if (mounted && !_isNavigating) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('All cameras failed. Retrying primary camera...'),
+            backgroundColor: Colors.red,
+            duration: const Duration(seconds: 3),
+            action: SnackBarAction(
+              label: 'Manual',
+              textColor: Colors.white,
+              onPressed: () {
+                // Could show manual URL entry dialog here
+              },
+            ),
+          ),
+        );
+      }
+    }
+    
     try {
       _vlcViewController?.dispose();
     } catch (e) {
@@ -555,7 +631,8 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> with WidgetsBinding
     }
   }
 
-  void _startAutoScan() {
+  void _startAutoScan() async {
+    
     print('🎯 _startAutoScan() called');
     print('🎯 PTZ Supported: $_ptzSupported');
     print('🎯 VLC Connected: $_isConnected, VLC Loading: $_isLoading');
@@ -577,6 +654,7 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> with WidgetsBinding
     print('🎯 Starting Auto-scan workflow');
     setState(() {
       _currentScanState = AutoScanState.analyzing;
+      _currentPatternIndex = 0; // Reset pattern to start from beginning
     });
 
     ScaffoldMessenger.of(context).showSnackBar(
@@ -586,6 +664,15 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> with WidgetsBinding
         duration: Duration(seconds: 3),
       ),
     );
+
+    print('🎯 Step 0: Analyzing CURRENT position before starting movement pattern');
+    // Perform initial analysis at current camera position
+    await _performInitialAnalysisBeforeMovement();
+    
+    if (!_autoScanEnabled || !mounted) {
+      print('❌ Auto-scan aborted after initial analysis');
+      return;
+    }
 
     print('🎯 About to call _executeAutoScanCycle()');
     _executeAutoScanCycle();
@@ -610,6 +697,7 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> with WidgetsBinding
         _currentScanState = AutoScanState.idle;
         _currentDetections = [];
         _showBoundingBoxes = true;
+        _currentPatternIndex = 0; // Reset pattern
       });
     }
 
@@ -626,7 +714,7 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> with WidgetsBinding
 
   // New unified auto-scan cycle method
   Future<void> _executeAutoScanCycle() async {
-    print('🔄 _executeAutoScanCycle() called');
+    print('🔄 _executeAutoScanCycle() called - Pattern: ${_selectedScanPattern.name}, Index: $_currentPatternIndex');
     print('🔄 Auto-scan enabled: $_autoScanEnabled, mounted: $mounted');
     print('🔄 Current scan state: $_currentScanState');
     
@@ -636,185 +724,305 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> with WidgetsBinding
     }
 
     try {
-      // State 1: Initial Analysis
-      print('📊 Auto-scan: Step 1 - Running analysis');
-      if (mounted) {
+      // Get current direction from pattern
+      final currentDirection = _scanPattern[_currentPatternIndex % _scanPattern.length];
+      final patternStep = (_currentPatternIndex % _scanPattern.length) + 1;
+      
+      // Determine if we should analyze based on selected pattern
+      bool shouldAnalyze;
+      if (_selectedScanPattern == ScanPatternType.continuous) {
+        // Continuous pattern: always analyze
+        shouldAnalyze = true;
+      } else {
+        // Custom pattern: skip analysis for DOWN movement (index 1)
+        shouldAnalyze = (_currentPatternIndex % _scanPattern.length) != 1;
+      }
+      
+      print('🎯 Pattern: ${_selectedScanPattern.name}, Step $patternStep: Direction=${currentDirection.name.toUpperCase()}, ShouldAnalyze=$shouldAnalyze');
+
+      // Phase 1: Camera Movement FIRST (move to new position before analyzing)
+      print('📹 Auto-scan: Step 1 - Moving camera ${currentDirection.name.toUpperCase()}');
+      if (mounted && !_isNavigating) {
         setState(() {
-          _currentScanState = AutoScanState.analyzing;
+          _currentScanState = AutoScanState.movingCamera;
+          // Clear bounding boxes during movement
+          _showBoundingBoxes = false;
+          _currentDetections = [];
         });
       }
 
-      final analysisResult = await _performSingleAnalysis();
-      
-      // ADD: More detailed logging of analysis result
-      print('📊 DETAILED Analysis result: $analysisResult');
-      print('📊 Analysis result type: ${analysisResult.runtimeType}');
-      if (analysisResult != null) {
-        print('📊 isDamageDetected: ${analysisResult['isDamageDetected']}');
-        print('📊 damageType: ${analysisResult['damageType']}');
-        print('📊 confidence: ${analysisResult['confidence']}');
-      } else {
-        print('❌ Analysis result is NULL - this is the problem!');
-      }
+      final moveSuccess = await _performCameraMovement(currentDirection);
+      print('📹 Camera movement result: $moveSuccess');
 
       if (!_autoScanEnabled || !mounted) {
-        print('❌ Auto-scan aborted after analysis');
+        print('❌ Auto-scan aborted after camera movement');
         return;
       }
 
-      // State 2: Show Detection Results (5 seconds) - UPDATED FOR MULTIPLE DETECTIONS
-      print('🎯 Auto-scan: Step 2 - Showing results for 5 seconds');
-      if (mounted) {
-        setState(() {
-          _currentScanState = AutoScanState.showingResults;
-          
-          if (analysisResult != null) {
-            // NEW: Handle multiple detections if available
-            if (analysisResult.containsKey('allDetections') && analysisResult['allDetections'] is List) {
-              final allDetections = analysisResult['allDetections'] as List;
-              print('🎯 Displaying ${allDetections.length} detections simultaneously');
-              
-              _currentDetections = [];
-              
-              for (int i = 0; i < allDetections.length; i++) {
-                final detection = allDetections[i];
+      // Phase 2: Camera Stabilization (let camera settle before analyzing)
+      if (moveSuccess) {
+        print('⏳ Auto-scan: Step 2 - Camera stabilization (3 seconds)');
+        if (mounted) {
+          setState(() {
+            _currentScanState = AutoScanState.stabilizing;
+          });
+        }
+
+        await Future.delayed(const Duration(seconds: 3));
+        
+        if (!_autoScanEnabled || !mounted) {
+          print('❌ Auto-scan aborted after stabilization');
+          return;
+        }
+      } else {
+        print('❌ Auto-scan: Camera movement failed, retrying cycle');
+        // Retry the cycle even if movement fails
+        await Future.delayed(const Duration(seconds: 2));
+        if (_autoScanEnabled && mounted) {
+          print('🔄 Retrying auto-scan cycle after movement failure');
+          _executeAutoScanCycle();
+        }
+        return;
+      }
+
+      // Phase 3: Analysis (conditionally, AFTER moving to new position)
+      if (shouldAnalyze) {
+        print('📊 Auto-scan: Step 3 - Running analysis at new position');
+        if (mounted) {
+          setState(() {
+            _currentScanState = AutoScanState.analyzing;
+          });
+        }
+
+        final analysisResult = await _performSingleAnalysis();
+        
+        // ADD: More detailed logging of analysis result
+        print('📊 DETAILED Analysis result: $analysisResult');
+        print('📊 Analysis result type: ${analysisResult.runtimeType}');
+        if (analysisResult != null) {
+          print('📊 isDamageDetected: ${analysisResult['isDamageDetected']}');
+          print('📊 damageType: ${analysisResult['damageType']}');
+          print('📊 confidence: ${analysisResult['confidence']}');
+        } else {
+          print('❌ Analysis result is NULL - this is the problem!');
+        }
+
+        if (!_autoScanEnabled || !mounted) {
+          print('❌ Auto-scan aborted after analysis');
+          return;
+        }
+
+        // Phase 4: Show Detection Results (5 seconds)
+        print('🎯 Auto-scan: Step 4 - Showing results for 5 seconds');
+        if (mounted) {
+          setState(() {
+            _currentScanState = AutoScanState.showingResults;
+            
+            if (analysisResult != null) {
+              // NEW: Handle multiple detections if available
+              if (analysisResult.containsKey('allDetections') && analysisResult['allDetections'] is List) {
+                final allDetections = analysisResult['allDetections'] as List;
+                print('🎯 Displaying ${allDetections.length} detections simultaneously');
                 
-                // Show ALL detections regardless of confidence level
-                final displayDetection = {
-                  'label': '${detection['damageType']} #${i + 1}',
-                  'confidence': detection['confidence'],
-                  'damageType': detection['damageType'], // Add damage type for color coding
-                  'box': detection['boundingBox'] ?? {
-                    'x': 0.2 + (i * 0.15), // Offset multiple boxes horizontally
-                    'y': 0.2 + (i * 0.1),  // Offset multiple boxes vertically
-                    'width': 0.25,
+                _currentDetections = [];
+                
+                for (int i = 0; i < allDetections.length; i++) {
+                  final detection = allDetections[i];
+                  
+                  // Show ALL detections regardless of confidence level
+                  final displayDetection = {
+                    'label': '${detection['damageType']} #${i + 1}',
+                    'confidence': detection['confidence'],
+                    'damageType': detection['damageType'], // Add damage type for color coding
+                    'box': detection['boundingBox'] ?? {
+                      'x': 0.2 + (i * 0.15), // Offset multiple boxes horizontally
+                      'y': 0.2 + (i * 0.1),  // Offset multiple boxes vertically
+                      'width': 0.25,
+                      'height': 0.2,
+                    }
+                  };
+                  _currentDetections.add(displayDetection);
+                }
+                
+                _showBoundingBoxes = _currentDetections.isNotEmpty;
+                print('🎯 Showing ${_currentDetections.length} bounding boxes for multiple detections');
+              }
+              // Handle single detection (existing logic)
+              else if (analysisResult['isDamageDetected'] == true) {
+                final detection = {
+                  'label': analysisResult['damageType'] ?? 'Unknown',
+                  'confidence': analysisResult['confidence'] ?? 0.0,
+                  'damageType': analysisResult['damageType'] ?? 'Unknown', // Add damage type for color coding
+                  'box': analysisResult['boundingBox'] ?? {
+                    'x': 0.3,
+                    'y': 0.3,
+                    'width': 0.4,
+                    'height': 0.4,
+                  }
+                };
+                _currentDetections = [detection];
+                _showBoundingBoxes = true;
+                print('🎯 Showing single bounding box for detection: ${detection['label']}');
+              } else {
+                // Show "No Damage" indicator for completed analysis
+                final noDetection = {
+                  'label': 'No Damage Detected',
+                  'confidence': analysisResult['confidence'] ?? 0.0,
+                  'damageType': 'No Damage', // Add damage type for color coding
+                  'box': {
+                    'x': 0.4,
+                    'y': 0.4,
+                    'width': 0.2,
                     'height': 0.2,
                   }
                 };
-                _currentDetections.add(displayDetection);
+                _currentDetections = [noDetection];
+                _showBoundingBoxes = true;
+                print('🎯 Showing "No Damage" indicator with confidence: ${analysisResult['confidence']}');
               }
-              
-              _showBoundingBoxes = _currentDetections.isNotEmpty;
-              print('🎯 Showing ${_currentDetections.length} bounding boxes for multiple detections');
-            }
-            // Handle single detection (existing logic)
-            else if (analysisResult['isDamageDetected'] == true) {
-              final detection = {
-                'label': analysisResult['damageType'] ?? 'Unknown',
-                'confidence': analysisResult['confidence'] ?? 0.0,
-                'damageType': analysisResult['damageType'] ?? 'Unknown', // Add damage type for color coding
-                'box': analysisResult['boundingBox'] ?? {
-                  'x': 0.3,
-                  'y': 0.3,
-                  'width': 0.4,
-                  'height': 0.4,
-                }
-              };
-              _currentDetections = [detection];
-              _showBoundingBoxes = true;
-              print('🎯 Showing single bounding box for detection: ${detection['label']}');
             } else {
-              // Show "No Damage" indicator for completed analysis
-              final noDetection = {
-                'label': 'No Damage Detected',
-                'confidence': analysisResult['confidence'] ?? 0.0,
-                'damageType': 'No Damage', // Add damage type for color coding
-                'box': {
-                  'x': 0.4,
-                  'y': 0.4,
-                  'width': 0.2,
-                  'height': 0.2,
-                }
-              };
-              _currentDetections = [noDetection];
-              _showBoundingBoxes = true;
-              print('🎯 Showing "No Damage" indicator with confidence: ${analysisResult['confidence']}');
+              _currentDetections = [];
+              _showBoundingBoxes = false;
+              print('🎯 Analysis failed, hiding bounding boxes');
             }
-          } else {
-            _currentDetections = [];
-            _showBoundingBoxes = false;
-            print('🎯 Analysis failed, hiding bounding boxes');
-          }
-        });
-      }
-
-      // Wait exactly 5 seconds
-      print('⏰ Auto-scan: Setting 5-second timer for results display');
-      _autoScanTimer = Timer(const Duration(seconds: 5), () async {
-        print('⏰ 5-second timer triggered');
-        // Double-check mounted state and auto-scan enabled to prevent setState on disposed widget
-        if (!_autoScanEnabled || !mounted || _isNavigating) {
-          print('❌ Auto-scan aborted in timer callback - mounted: $mounted, enabled: $_autoScanEnabled, navigating: $_isNavigating');
-          return;
+          });
         }
 
-        // Additional safety check - verify the timer hasn't been cancelled
-        if (_autoScanTimer == null) {
-          print('❌ Auto-scan timer was cancelled');
+        // Wait exactly 5 seconds to show results
+        await Future.delayed(const Duration(seconds: 5));
+        
+        if (!_autoScanEnabled || !mounted) {
+          print('❌ Auto-scan aborted after showing results');
           return;
         }
-
-        // State 3: Camera Movement
-        print('📹 Auto-scan: Step 3 - Moving camera');
+        
+        // Clear bounding boxes after showing results
         if (mounted && !_isNavigating) {
           setState(() {
-            _currentScanState = AutoScanState.movingCamera;
-            _showBoundingBoxes = false; // Hide bounding boxes during movement
+            _showBoundingBoxes = false;
             _currentDetections = [];
           });
+          print('🧹 Cleared bounding boxes after showing results');
         }
+      } else {
+        print('⏩ Skipping analysis for ${currentDirection.name.toUpperCase()} movement');
+      }
 
-        final moveSuccess = await _performCameraMovement();
-        print('📹 Camera movement result: $moveSuccess');
-
-        if (!_autoScanEnabled || !mounted) {
-          print('❌ Auto-scan aborted after camera movement');
-          return;
-        }
-
-        // State 4: Camera Stabilization
-        if (moveSuccess) {
-          print('⏳ Auto-scan: Step 4 - Camera stabilization (3 seconds)');
-          if (mounted) {
-            setState(() {
-              _currentScanState = AutoScanState.stabilizing;
-            });
-          }
-
-          _autoScanTimer = Timer(const Duration(seconds: 3), () {
-            print('⏳ Stabilization timer triggered');
-            if (!_autoScanEnabled || !mounted) {
-              print('❌ Auto-scan aborted in stabilization callback');
-              return;
-            }
-
-            // Return to State 1: Next Analysis Cycle
-            print('🔄 Auto-scan: Cycle complete, starting next analysis');
-            _executeAutoScanCycle(); // Recursive call for continuous scanning
-          });
-        } else {
-          print('❌ Auto-scan: Camera movement failed, retrying cycle');
-          // Retry the cycle even if movement fails
-          _autoScanTimer = Timer(const Duration(seconds: 2), () {
-            if (_autoScanEnabled && mounted) {
-              print('🔄 Retrying auto-scan cycle after movement failure');
-              _executeAutoScanCycle();
-            }
-          });
-        }
-      });
+      // Increment pattern index for next cycle
+      _currentPatternIndex++;
+      print('🔄 Pattern index incremented to $_currentPatternIndex');
+      
+      // Continue to next cycle
+      print('🔄 Auto-scan: Cycle complete, starting next cycle');
+      _executeAutoScanCycle(); // Recursive call for continuous scanning
 
     } catch (e) {
       print('❌ Auto-scan: Error in cycle: $e');
       if (_autoScanEnabled && mounted) {
         // Retry after error
-        _autoScanTimer = Timer(const Duration(seconds: 3), () {
-          if (_autoScanEnabled && mounted) {
-            print('🔄 Retrying auto-scan cycle after error');
-            _executeAutoScanCycle();
-          }
-        });
+        await Future.delayed(const Duration(seconds: 3));
+        if (_autoScanEnabled && mounted) {
+          print('🔄 Retrying auto-scan cycle after error');
+          _executeAutoScanCycle();
+        }
       }
+    }
+  }
+
+  // Perform initial analysis at current camera position before starting movement pattern
+  Future<void> _performInitialAnalysisBeforeMovement() async {
+    print('🎯 Step 0: Analyzing CURRENT camera position');
+    
+    if (!mounted || !_autoScanEnabled) {
+      print('❌ Initial analysis aborted: mounted=$mounted, enabled=$_autoScanEnabled');
+      return;
+    }
+
+    // Set analyzing state
+    setState(() {
+      _currentScanState = AutoScanState.analyzing;
+    });
+
+    // Perform analysis at current position
+    final analysisResult = await _performSingleAnalysis();
+    
+    if (!mounted || !_autoScanEnabled) {
+      print('❌ Initial analysis completed but auto-scan stopped');
+      return;
+    }
+
+    // Show results if analysis succeeded
+    if (analysisResult != null) {
+      print('🎯 Step 0: Showing initial analysis results for 5 seconds');
+      
+      setState(() {
+        _currentScanState = AutoScanState.showingResults;
+        
+        if (analysisResult.containsKey('allDetections') && analysisResult['allDetections'] is List) {
+          final allDetections = analysisResult['allDetections'] as List;
+          print('🎯 Initial analysis: ${allDetections.length} detections found');
+          
+          _currentDetections = [];
+          for (int i = 0; i < allDetections.length; i++) {
+            final detection = allDetections[i];
+            _currentDetections.add({
+              'label': '${detection['damageType']} #${i + 1}',
+              'confidence': detection['confidence'],
+              'damageType': detection['damageType'],
+              'box': detection['boundingBox'] ?? {
+                'x': 0.2 + (i * 0.15),
+                'y': 0.2 + (i * 0.1),
+                'width': 0.25,
+                'height': 0.2,
+              }
+            });
+          }
+          _showBoundingBoxes = _currentDetections.isNotEmpty;
+        } else if (analysisResult['isDamageDetected'] == true) {
+          _currentDetections = [{
+            'label': analysisResult['damageType'] ?? 'Unknown',
+            'confidence': analysisResult['confidence'] ?? 0.0,
+            'damageType': analysisResult['damageType'] ?? 'Unknown',
+            'box': analysisResult['boundingBox'] ?? {
+              'x': 0.3,
+              'y': 0.3,
+              'width': 0.4,
+              'height': 0.4,
+            }
+          }];
+          _showBoundingBoxes = true;
+        } else {
+          _currentDetections = [{
+            'label': 'No Damage Detected',
+            'confidence': analysisResult['confidence'] ?? 0.0,
+            'damageType': 'No Damage',
+            'box': {
+              'x': 0.4,
+              'y': 0.4,
+              'width': 0.2,
+              'height': 0.2,
+            }
+          }];
+          _showBoundingBoxes = true;
+        }
+      });
+
+      // Wait 5 seconds to show results
+      await Future.delayed(const Duration(seconds: 5));
+      
+      if (!mounted || !_autoScanEnabled) {
+        print('❌ Initial analysis display completed but auto-scan stopped');
+        return;
+      }
+
+      // Clear results before starting movement pattern
+      setState(() {
+        _showBoundingBoxes = false;
+        _currentDetections = [];
+      });
+      print('🧹 Cleared initial analysis results');
+    } else {
+      print('❌ Initial analysis failed, continuing to movement pattern anyway');
     }
   }
 
@@ -900,8 +1108,9 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> with WidgetsBinding
   }
 
   // Simplified camera movement method
-  Future<bool> _performCameraMovement() async {
-    print('🎬 Auto-scan: ===== CAMERA MOVEMENT START =====');
+  Future<bool> _performCameraMovement([PTZDirection? direction]) async {
+    final dir = direction ?? PTZDirection.right; // Default to right for backward compatibility
+    print('🎬 Auto-scan: ===== CAMERA MOVEMENT START (${dir.name.toUpperCase()}) =====');
     print('🎬 Auto-scan: PTZ supported: $_ptzSupported, Is moving: $_isMovingCamera');
     
     if (!_ptzSupported) {
@@ -922,13 +1131,34 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> with WidgetsBinding
       
       print('🎬 Auto-scan: Starting movement $_totalPTZMovements');
       
-      print(' Auto-scan: ➡️ PTZ: Moving RIGHT (movement $_totalPTZMovements)');
+      print('🎬 Auto-scan: ➡️ PTZ: Moving ${dir.name.toUpperCase()} (movement $_totalPTZMovements)');
       print('🎬 Auto-scan: RTSP URL: ${widget.rtspUrl}');
         
       // Add retry logic for failed movements
       for (int attempt = 1; attempt <= 2; attempt++) {
         print('🎬 Auto-scan: Movement attempt $attempt/2');
-        success = await PTZService.panRight(widget.rtspUrl, speed: 4);
+        
+        // Execute movement based on direction
+        switch (dir) {
+          case PTZDirection.up:
+            // Reduced duration for smaller UP movement (300ms instead of default 500ms)
+            success = await PTZService.tiltUp(widget.rtspUrl, speed: 3, durationMs: 500);
+            break;
+          case PTZDirection.down:
+            // Reduced duration for smaller DOWN movement (300ms instead of default 500ms)
+            success = await PTZService.tiltDown(widget.rtspUrl, speed: 3, durationMs: 500);
+            break;
+          case PTZDirection.left:
+            success = await PTZService.panLeft(widget.rtspUrl, speed: 4);
+            break;
+          case PTZDirection.right:
+            success = await PTZService.panRight(widget.rtspUrl, speed: 4);
+            break;
+          case PTZDirection.center:
+            // Center position - no movement needed for now
+            success = true;
+            break;
+        }
         
         if (success) {
           print('🎬 Auto-scan: ✅ Movement successful on attempt $attempt');
@@ -2590,6 +2820,11 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> with WidgetsBinding
                       
                       const SizedBox(height: 16),
                       
+                      // Scan Pattern Selector
+                      _buildScanPatternSelector(),
+                      
+                      const SizedBox(height: 16),
+                      
                       // PTZ Controls (if supported or debug mode)
                       if (_ptzSupported) ...[
                         /*Row(
@@ -2786,7 +3021,7 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> with WidgetsBinding
                               const SizedBox(height: 16),
                               
                               // Scan Pattern Selection
-                              Row(
+                              /*Row(
                                 children: [
                                   Text(
                                     'Auto-scan pattern:',
@@ -2811,7 +3046,7 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> with WidgetsBinding
                                     ),
                                   ),
                                 ],
-                              ),
+                              ),*/
                             ],
                           ),
                         ),
@@ -2845,7 +3080,7 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> with WidgetsBinding
                       const SizedBox(height: 16),
                       
                       // ADD: Manual Test Buttons
-                     Row(
+                     /* Row(
                         children: [
                           Expanded(
                             child: _buildControlCard(
@@ -2865,7 +3100,7 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> with WidgetsBinding
                                ),
                           ),
                         ],
-                      ),
+                      ),*/
                       
                       const SizedBox(height: 32),
                       
@@ -3060,6 +3295,117 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> with WidgetsBinding
       icon: _autoScanEnabled ? Icons.stop_circle : Icons.auto_awesome,
       color: _autoScanEnabled ? Colors.red : Colors.green,
       onTap: _toggleAutoScan,
+    );
+  }
+
+  // Pattern selector widget
+  Widget _buildScanPatternSelector() {
+    return Container(
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.05),
+            blurRadius: 10,
+            offset: const Offset(0, 2),
+          ),
+        ],
+      ),
+      padding: const EdgeInsets.all(16),
+      child: Row(
+        children: [
+          Icon(
+            Icons.route,
+            color: Colors.grey[600],
+            size: 20,
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Scan Pattern',
+                  style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w500,
+                    color: Colors.grey[600],
+                  ),
+                ),
+                const SizedBox(height: 4),
+                DropdownButton<ScanPatternType>(
+                  value: _selectedScanPattern,
+                  isExpanded: true,
+                  isDense: true,
+                  underline: const SizedBox(),
+                  icon: Icon(
+                    Icons.keyboard_arrow_down,
+                    color: _autoScanEnabled ? Colors.grey[400] : Colors.grey[700],
+                  ),
+                  style: TextStyle(
+                    color: _autoScanEnabled ? Colors.grey[400] : Colors.grey[900],
+                    fontSize: 14,
+                    fontWeight: FontWeight.w600,
+                  ),
+                  items: [
+                    DropdownMenuItem(
+                      value: ScanPatternType.continuous,
+                      child: Text(
+                        'Continuous Right',
+                        style: TextStyle(
+                          color: Colors.grey[900],
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                    ),
+                    DropdownMenuItem(
+                      value: ScanPatternType.upDownRight,
+                      child: Text(
+                        'Up-Down-Right',
+                        style: TextStyle(
+                          color: Colors.grey[900],
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                    ),
+                  ],
+                  onChanged: _autoScanEnabled 
+                    ? null
+                    : (ScanPatternType? newPattern) {
+                        if (newPattern != null && mounted) {
+                          setState(() {
+                            _selectedScanPattern = newPattern;
+                            _currentPatternIndex = 0;
+                          });
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            SnackBar(
+                              content: Text(
+                                'Pattern changed to ${newPattern == ScanPatternType.continuous ? "Continuous Right" : "Up-Down-Right"}',
+                              ),
+                              backgroundColor: Colors.green,
+                              duration: const Duration(seconds: 2),
+                            ),
+                          );
+                        }
+                      },
+                ),
+                if (_autoScanEnabled)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 4),
+                    child: Text(
+                      'Stop scan to change',
+                      style: TextStyle(
+                        fontSize: 11,
+                        color: Colors.grey[500],
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        ],
+      ),
     );
   }
 

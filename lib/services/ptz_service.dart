@@ -53,6 +53,15 @@ class PTZScanPattern {
     PTZDirection.right, // Position 11 (330°)
     PTZDirection.right, // Position 12 (360°/0°)
   ];
+
+  /// Custom Up-Down-Right pattern
+  /// Pattern: Analyze → Up → Analyze → Down (no analysis) → Right → Repeat
+  /// This pattern scans vertically first, then moves horizontally
+  static const List<PTZDirection> upDownRightScan = [
+    PTZDirection.up,    // Analyze after this
+    PTZDirection.down,  // Skip analysis after this
+    PTZDirection.right, // Move right and continue
+  ];
 }
 
 /// Service for controlling PTZ (Pan-Tilt-Zoom) cameras
@@ -450,15 +459,37 @@ class PTZService {
   }
   
   /// Tilt the camera up using correct AMCREST API format
-  static Future<bool> tiltUp(String rtspUrl, {int speed = 4}) async {
+  /// Speed: 1-8 (1=slowest, 8=fastest)
+  /// Duration: milliseconds to move (e.g., 500ms = small movement, 1000ms = medium, 2000ms = large)
+  static Future<bool> tiltUp(String rtspUrl, {int speed = 4, int durationMs = 500}) async {
     // Use correct AMCREST format: arg1=0, arg2=speed[1-8]
-    return await _sendCameraCommand(rtspUrl, 'action=start&channel=0&code=Up&arg1=0&arg2=$speed&arg3=0');
+    final startSuccess = await _sendCameraCommand(rtspUrl, 'action=start&channel=0&code=Up&arg1=0&arg2=$speed&arg3=0');
+    
+    if (startSuccess && durationMs > 0) {
+      // Wait for specified duration
+      await Future.delayed(Duration(milliseconds: durationMs));
+      // Stop the movement
+      await _sendCameraCommand(rtspUrl, 'action=stop&channel=0&code=Up&arg1=0&arg2=$speed&arg3=0');
+    }
+    
+    return startSuccess;
   }
   
   /// Tilt the camera down using correct AMCREST API format
-  static Future<bool> tiltDown(String rtspUrl, {int speed = 4}) async {
+  /// Speed: 1-8 (1=slowest, 8=fastest)
+  /// Duration: milliseconds to move (e.g., 500ms = small movement, 1000ms = medium, 2000ms = large)
+  static Future<bool> tiltDown(String rtspUrl, {int speed = 4, int durationMs = 500}) async {
     // Use correct AMCREST format: arg1=0, arg2=speed[1-8]
-    return await _sendCameraCommand(rtspUrl, 'action=start&channel=0&code=Down&arg1=0&arg2=$speed&arg3=0');
+    final startSuccess = await _sendCameraCommand(rtspUrl, 'action=start&channel=0&code=Down&arg1=0&arg2=$speed&arg3=0');
+    
+    if (startSuccess && durationMs > 0) {
+      // Wait for specified duration
+      await Future.delayed(Duration(milliseconds: durationMs));
+      // Stop the movement
+      await _sendCameraCommand(rtspUrl, 'action=stop&channel=0&code=Down&arg1=0&arg2=$speed&arg3=0');
+    }
+    
+    return startSuccess;
   }
   
   /// Zoom in using correct AMCREST API format

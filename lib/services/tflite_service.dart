@@ -11,16 +11,16 @@ class TFLiteService {
   static Interpreter? _interpreter;
   static List<String>? _labels;
   static bool _isInitialized = false;
-  static bool _mockMode = false; // Add mock mode for debugging
-  static bool _isQuantized = false; // Track quantized model type
-  static bool _isFloat16 = false;   // Track float16 model type
+  static bool _mockMode = false; 
+  static bool _isQuantized = false; 
+  static bool _isFloat16 = false; 
 
-  // Model configuration - UPDATE THIS PATH FOR YOUR FLOAT32 MODEL
-  static const String modelPath = 'assets/models/RealDamageDetection16x960.tflite'; // Change to float32 model path
+ 
+  static const String modelPath = 'assets/models/LatestRealDamageDetection32x960.tflite';
   static const String labelsPath = 'assets/models/labels.txt';
-  static int inputSize = 960; // Dynamic input size - will be updated from model
+  static int inputSize = 960; 
 
-  /// Initialize the TFLite model
+
   static Future<bool> initialize() async {
     try {
       print('🔍 TFLite Service: Starting initialization check...');
