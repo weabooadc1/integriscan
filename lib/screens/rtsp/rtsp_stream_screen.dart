@@ -49,6 +49,16 @@ enum ScanPatternType {
 }
 
 class _RtspStreamScreenState extends State<RtspStreamScreen> with WidgetsBindingObserver {
+  /// AI Confidence Threshold Configuration
+  /// Minimum confidence level (0.0-1.0) for accepting detections
+  /// 
+  /// Recommended values:
+  /// - 0.5 (50%): More sensitive, catches more damage but more false positives
+  /// - 0.6 (60%): Balanced (DEFAULT) - good trade-off between sensitivity and accuracy
+  /// - 0.7 (70%): Conservative, fewer false positives but might miss some damage
+  /// - 0.8 (80%): Very strict, high confidence only
+  static const double CONFIDENCE_THRESHOLD = 0.6;
+  
   VlcPlayerController? _vlcViewController;
   bool _isPlaying = true;
   bool _isConnected = false;
@@ -674,6 +684,22 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> with WidgetsBinding
       return;
     }
 
+    // Reset state to idle before starting the scan cycle
+    if (mounted && !_isNavigating) {
+      setState(() {
+        _currentScanState = AutoScanState.idle;
+      });
+      print('🎯 State reset to idle before starting scan cycle');
+    }
+
+    // Small delay to ensure state update is visible
+    await Future.delayed(const Duration(milliseconds: 500));
+    
+    if (!_autoScanEnabled || !mounted) {
+      print('❌ Auto-scan aborted before starting cycle');
+      return;
+    }
+
     print('🎯 About to call _executeAutoScanCycle()');
     _executeAutoScanCycle();
   }
@@ -1078,6 +1104,34 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> with WidgetsBinding
         return null;
       }
       
+      // ✨ Apply confidence threshold filter
+      final confidence = (result['confidence'] as num?)?.toDouble() ?? 0.0;
+      final isDamageDetected = result['isDamageDetected'] == true;
+      
+      print('🎯 Confidence filter check:');
+      print('  - Raw confidence: ${(confidence * 100).toStringAsFixed(1)}%');
+      print('  - Threshold: ${(CONFIDENCE_THRESHOLD * 100).toStringAsFixed(1)}%');
+      print('  - Is damage detected: $isDamageDetected');
+      
+      // Filter out low-confidence detections
+      if (isDamageDetected && confidence < CONFIDENCE_THRESHOLD) {
+        print('⚠️ Detection REJECTED: Confidence ${(confidence * 100).toStringAsFixed(1)}% below threshold ${(CONFIDENCE_THRESHOLD * 100).toStringAsFixed(1)}%');
+        
+        // Return a "no damage" result instead
+        return {
+          'isDamageDetected': false,
+          'damageType': 'No Damage',
+          'confidence': confidence,
+          'boundingBox': result['boundingBox'],
+          'rejectedDueToLowConfidence': true, // Flag for debugging
+          'originalDamageType': result['damageType'], // Keep original for debugging
+        };
+      }
+      
+      if (isDamageDetected) {
+        print('✅ Detection ACCEPTED: ${result['damageType']} with ${(confidence * 100).toStringAsFixed(1)}% confidence');
+      }
+      
       print('🤖 Result validation:');
       print('  - Has isDamageDetected key: ${result.containsKey('isDamageDetected')}');
       print('  - isDamageDetected value: ${result['isDamageDetected']}');
@@ -1086,15 +1140,16 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> with WidgetsBinding
       if (mounted && !_isNavigating) {
         _debouncedSetState(() {
           _totalFramesAnalyzed++;
-          if (result['isDamageDetected'] == true) {
+          // Only count as damage if it passed the confidence threshold
+          if (result['isDamageDetected'] == true && confidence >= CONFIDENCE_THRESHOLD) {
             _damagesDetected++;
           }
           _lastAnalysisResult = result;
         });
       }
       
-      // Save detection to history in background if damage detected
-      if (result['isDamageDetected'] == true) {
+      // Save detection to history in background only if damage detected AND confidence passes threshold
+      if (result['isDamageDetected'] == true && confidence >= CONFIDENCE_THRESHOLD) {
         // Fire and forget - don't await
         unawaited(_saveDetectionToHistoryAsync(result, frameBytes));
       }
@@ -3164,12 +3219,15 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> with WidgetsBinding
                                 _lastAnalysisResult!['damageType'] ?? 'Unknown',
                                 Colors.blue,
                               ),
-                              const SizedBox(height: 8),
-                              _buildAnalysisResultItem(
-                                'Confidence',
-                                '${(_lastAnalysisResult!['confidence'] * 100).toStringAsFixed(1)}%',
-                                Colors.orange,
-                              ),
+                              // Only show confidence if damage was detected
+                              if (_lastAnalysisResult!['isDamageDetected'] == true) ...[
+                                const SizedBox(height: 8),
+                                _buildAnalysisResultItem(
+                                  'Confidence',
+                                  '${(_lastAnalysisResult!['confidence'] * 100).toStringAsFixed(1)}%',
+                                  Colors.orange,
+                                ),
+                              ],
                               const SizedBox(height: 16),
                               Row(
                                 children: [
@@ -3838,9 +3896,13 @@ class BoundingBoxPainter extends CustomPainter {
       canvas.drawRect(rect, paint);
 
       // Prepare label text with damage index for multiple damages
-      final labelText = detections.length > 1 
-          ? '$label ${(confidence * 100).toInt()}%'
-          : '$label ${(confidence * 100).toInt()}%';
+      // Don't show confidence for "No Damage" detections
+      final isNoDamage = damageType.toLowerCase().contains('no damage');
+      final labelText = isNoDamage
+          ? label // No confidence for "No Damage"
+          : (detections.length > 1 
+              ? '$label ${(confidence * 100).toInt()}%'
+              : '$label ${(confidence * 100).toInt()}%');
           
       final textSpan = TextSpan(
         text: labelText,

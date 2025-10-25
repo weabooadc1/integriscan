@@ -12,7 +12,8 @@ class DetectionReport {
   final bool flaggedForVerification;
   final DateTime? flaggedAt;
   final String verificationStatus; // "none", "review", "clear", "issues"
-  final String? engineerComments;
+  final String? userFlaggingComments; // User's reason for flagging
+  final String? engineerComments; // Engineer's review comments
   final DateTime? reviewedAt;
   
   // Offline flagging support
@@ -31,6 +32,7 @@ class DetectionReport {
     this.flaggedForVerification = false,
     this.flaggedAt,
     this.verificationStatus = 'none',
+    this.userFlaggingComments,
     this.engineerComments,
     this.reviewedAt,
     this.pendingFlagSync = false,
@@ -54,6 +56,7 @@ class DetectionReport {
       'flaggedForVerification': flaggedForVerification ? 1 : 0,
       'flaggedAt': flaggedAt?.toIso8601String(),
       'verificationStatus': verificationStatus,
+      'userFlaggingComments': userFlaggingComments,
       'engineerComments': engineerComments,
       'reviewedAt': reviewedAt?.toIso8601String(),
       'pendingFlagSync': pendingFlagSync ? 1 : 0,
@@ -85,6 +88,7 @@ class DetectionReport {
       flaggedForVerification: (map['flaggedForVerification'] ?? 0) == 1,
       flaggedAt: map['flaggedAt'] != null ? DateTime.parse(map['flaggedAt']) : null,
       verificationStatus: map['verificationStatus'] ?? 'none',
+      userFlaggingComments: map['userFlaggingComments'],
       engineerComments: map['engineerComments'],
       reviewedAt: map['reviewedAt'] != null ? DateTime.parse(map['reviewedAt']) : null,
       pendingFlagSync: (map['pendingFlagSync'] ?? 0) == 1,

@@ -489,6 +489,50 @@ class _MyFlaggedReportsScreenState extends State<MyFlaggedReportsScreen> with Si
                 ),
               ],
 
+              // User flagging comments
+              if (report.userFlaggingComments != null && report.userFlaggingComments!.isNotEmpty) ...[
+                const SizedBox(height: 12),
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: Colors.blue[50],
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: Colors.blue[200]!),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          Icon(
+                            Icons.flag,
+                            size: 16,
+                            color: Colors.blue[700],
+                          ),
+                          const SizedBox(width: 8),
+                          Text(
+                            'Your Flagging Reason:',
+                            style: TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.w600,
+                              color: Colors.blue[700],
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 8),
+                      Text(
+                        report.userFlaggingComments!,
+                        style: TextStyle(
+                          fontSize: 14,
+                          color: Colors.blue[900],
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+
               // Engineer comments
               if (report.engineerComments != null && report.engineerComments!.isNotEmpty) ...[
                 const SizedBox(height: 12),

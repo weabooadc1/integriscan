@@ -41,7 +41,7 @@ class DatabaseHelper {
     final path = join(dbPath, 'app_database.db');
     return await openDatabase(
       path,
-      version: 10, // Incremented for normalization: report_recommendations table + triggers
+      version: 11, // Incremented for userFlaggingComments field
       onCreate: _onCreate,
       onUpgrade: _onUpgrade,
     );
@@ -268,6 +268,37 @@ class DatabaseHelper {
         print('⚠️  Manual intervention may be required');
       }
     }
+    if (oldVersion < 11) {
+      // Add userFlaggingComments column to separate user comments from engineer comments
+      try {
+        print('🔧 MIGRATION v11: Adding userFlaggingComments column...');
+        
+        var result = await db.rawQuery("PRAGMA table_info(reports)");
+        bool columnExists = result.any((column) => column['name'] == 'userFlaggingComments');
+        
+        if (!columnExists) {
+          await db.execute('ALTER TABLE reports ADD COLUMN userFlaggingComments TEXT');
+          print('✅ Added userFlaggingComments column to reports table');
+          
+          // Migrate existing data: If engineerComments exists and report is flagged but not reviewed,
+          // it's likely a user's flagging comment that was incorrectly stored
+          await db.execute('''
+            UPDATE reports 
+            SET userFlaggingComments = engineerComments,
+                engineerComments = NULL
+            WHERE flaggedForVerification = 1 
+              AND verificationStatus = 'review'
+              AND reviewedAt IS NULL
+              AND engineerComments IS NOT NULL
+          ''');
+          print('✅ Migrated existing flagging comments to userFlaggingComments field');
+        } else {
+          print('✅ userFlaggingComments column already exists');
+        }
+      } catch (e) {
+        print('❌ Error during userFlaggingComments migration: $e');
+      }
+    }
   }
 
   Future _createTables(Database db) async {
@@ -304,6 +335,7 @@ class DatabaseHelper {
         flaggedForVerification INTEGER NOT NULL DEFAULT 0,
         flaggedAt TEXT,
         verificationStatus TEXT NOT NULL DEFAULT 'none',
+        userFlaggingComments TEXT,
         engineerComments TEXT,
         reviewedAt TEXT,
         pendingFlagSync INTEGER NOT NULL DEFAULT 0,

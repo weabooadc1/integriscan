@@ -894,7 +894,7 @@ class ReportService {
           'flaggedForVerification': 1,
           'flaggedAt': now,
           'verificationStatus': 'review',
-          'engineerComments': comments,
+          'userFlaggingComments': comments, // User's reason for flagging
         });
         
         // Mark as pending sync
@@ -929,7 +929,7 @@ class ReportService {
           'flaggedForVerification': 1,
           'flaggedAt': now,
           'verificationStatus': 'review',
-          'engineerComments': comments,
+          'userFlaggingComments': comments, // User's reason for flagging
         });
         
         // Create engineer verification record (for local tracking)
