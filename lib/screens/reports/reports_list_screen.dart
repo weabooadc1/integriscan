@@ -19,6 +19,7 @@ class _ReportsListScreenState extends State<ReportsListScreen> with WidgetsBindi
   bool _loading = true;
   bool _selectionMode = false;
   bool _syncing = false;
+  bool _uploadingSyncing = false;
   Set<String> _selectedReportIds = {};
 
   @override
@@ -90,32 +91,37 @@ class _ReportsListScreenState extends State<ReportsListScreen> with WidgetsBindi
         return;
       }
 
-      // Sync reports from cloud to local database (download new reports from other devices)
-      await ReportService.syncReportsFromCloud(userId: userId);
+      print('🔄 Starting download sync process for userId: $userId');
       
-      // Sync unsynced local reports to cloud (upload any local-only reports)
-      await ReportService.syncAllUnsyncedReportsStatic(userId: userId);
+      // Sync reports from cloud to local database (download new reports from other devices)
+      print('📥 Downloading reports from cloud...');
+      await ReportService.syncReportsFromCloud(userId: userId);
+      print('✅ Cloud to local sync complete');
       
       // Reload reports to show the updated data
+      print('🔄 Reloading reports...');
       await _loadReports();
+      print('✅ Reports reloaded');
 
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-            content: Text('Successfully synced with cloud'),
+            content: Text('Successfully downloaded reports from cloud'),
             backgroundColor: Colors.green,
             behavior: SnackBarBehavior.floating,
           ),
         );
       }
-    } catch (e) {
-      print('Error syncing with cloud: $e');
+    } catch (e, stackTrace) {
+      print('❌ Error downloading from cloud: $e');
+      print('❌ Stack trace: $stackTrace');
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('Sync failed: ${e.toString()}'),
+            content: Text('Download failed: ${e.toString()}'),
             backgroundColor: Colors.red,
             behavior: SnackBarBehavior.floating,
+            duration: const Duration(seconds: 5),
           ),
         );
       }
@@ -123,6 +129,72 @@ class _ReportsListScreenState extends State<ReportsListScreen> with WidgetsBindi
       if (mounted) {
         setState(() {
           _syncing = false;
+        });
+      }
+    }
+  }
+
+  Future<void> _uploadUnsyncedReports() async {
+    if (_uploadingSyncing) return; // Prevent multiple concurrent uploads
+    
+    setState(() {
+      _uploadingSyncing = true;
+    });
+
+    try {
+      final authProvider = Provider.of<AuthProvider>(context, listen: false);
+      final userId = authProvider.user?.uid;
+
+      if (userId == null) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Please log in to upload reports'),
+              backgroundColor: Colors.orange,
+            ),
+          );
+        }
+        return;
+      }
+
+      print('🔄 Starting upload sync process for userId: $userId');
+      
+      // Sync unsynced local reports to cloud (upload any local-only reports)
+      print('📤 Uploading unsynced local reports to cloud...');
+      await ReportService.syncAllUnsyncedReportsStatic(userId: userId);
+      print('✅ Local to cloud sync complete');
+      
+      // Reload reports to show the updated data
+      print('🔄 Reloading reports...');
+      await _loadReports();
+      print('✅ Reports reloaded');
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Successfully uploaded unsynced reports'),
+            backgroundColor: Colors.green,
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+    } catch (e, stackTrace) {
+      print('❌ Error uploading to cloud: $e');
+      print('❌ Stack trace: $stackTrace');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Upload failed: ${e.toString()}'),
+            backgroundColor: Colors.red,
+            behavior: SnackBarBehavior.floating,
+            duration: const Duration(seconds: 5),
+          ),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _uploadingSyncing = false;
         });
       }
     }
@@ -349,7 +421,22 @@ class _ReportsListScreenState extends State<ReportsListScreen> with WidgetsBindi
             ),
           ],
           if (!_selectionMode) ...[
-            // Sync button
+            // Upload unsynced reports button
+            IconButton(
+              icon: _uploadingSyncing 
+                  ? const SizedBox(
+                      width: 20,
+                      height: 20,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        valueColor: AlwaysStoppedAnimation<Color>(Colors.orange),
+                      ),
+                    )
+                  : const Icon(Icons.cloud_upload),
+              onPressed: _uploadingSyncing ? null : _uploadUnsyncedReports,
+              tooltip: _uploadingSyncing ? 'Uploading...' : 'Upload Unsynced Reports',
+            ),
+            // Download from cloud button
             IconButton(
               icon: _syncing 
                   ? const SizedBox(
@@ -360,9 +447,9 @@ class _ReportsListScreenState extends State<ReportsListScreen> with WidgetsBindi
                         valueColor: AlwaysStoppedAnimation<Color>(Colors.blue),
                       ),
                     )
-                  : const Icon(Icons.cloud_sync),
+                  : const Icon(Icons.cloud_download),
               onPressed: _syncing ? null : _syncWithCloud,
-              tooltip: _syncing ? 'Syncing...' : 'Sync with Cloud',
+              tooltip: _syncing ? 'Downloading...' : 'Download from Cloud',
             ),
             // Add connectivity chip to actions when not in selection mode
             const Padding(
@@ -376,71 +463,84 @@ class _ReportsListScreenState extends State<ReportsListScreen> with WidgetsBindi
         showOnlineIndicator: false,
         child: _loading
             ? const Center(child: CircularProgressIndicator())
-            : _reports.isEmpty
-                ? _buildEmptyState()
-                : _buildReportsList(),
+            : RefreshIndicator(
+                onRefresh: _syncWithCloud,
+                child: _reports.isEmpty
+                    ? _buildEmptyState()
+                    : _buildReportsList(),
+              ),
       ),
     );
   }
 
   Widget _buildEmptyState() {
-    return Center(
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Icon(
-            Icons.assignment_outlined,
-            size: 80,
-            color: Colors.grey[400],
-          ),
-          const SizedBox(height: 16),
-          Text(
-            'No Reports Yet',
-            style: TextStyle(
-              fontSize: 20,
-              fontWeight: FontWeight.w600,
-              color: Colors.grey[700],
-            ),
-          ),
-          const SizedBox(height: 8),
-          Text(
-            'Start an inspection to generate your first report',
-            style: TextStyle(
-              fontSize: 14,
-              color: Colors.grey[600],
-            ),
-          ),
-          const SizedBox(height: 16),
-          Text(
-            'Or sync with cloud to see reports from other devices',
-            style: TextStyle(
-              fontSize: 12,
-              color: Colors.grey[500],
-              fontStyle: FontStyle.italic,
-            ),
-          ),
-          const SizedBox(height: 20),
-          ElevatedButton.icon(
-            onPressed: _syncing ? null : _syncWithCloud,
-            icon: _syncing 
-                ? const SizedBox(
-                    width: 16,
-                    height: 16,
-                    child: CircularProgressIndicator(
-                      strokeWidth: 2,
-                      valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        return SingleChildScrollView(
+          physics: const AlwaysScrollableScrollPhysics(),
+          child: ConstrainedBox(
+            constraints: BoxConstraints(minHeight: constraints.maxHeight),
+            child: Center(
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(
+                    Icons.assignment_outlined,
+                    size: 80,
+                    color: Colors.grey[400],
+                  ),
+                  const SizedBox(height: 16),
+                  Text(
+                    'No Reports Yet',
+                    style: TextStyle(
+                      fontSize: 20,
+                      fontWeight: FontWeight.w600,
+                      color: Colors.grey[700],
                     ),
-                  )
-                : const Icon(Icons.cloud_sync, size: 18),
-            label: Text(_syncing ? 'Syncing...' : 'Sync with Cloud'),
-            style: ElevatedButton.styleFrom(
-              backgroundColor: Colors.blue,
-              foregroundColor: Colors.white,
-              padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    'Start an inspection to generate your first report',
+                    style: TextStyle(
+                      fontSize: 14,
+                      color: Colors.grey[600],
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  Text(
+                    'Pull down to download from cloud',
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: Colors.grey[500],
+                      fontStyle: FontStyle.italic,
+                    ),
+                  ),
+                  const SizedBox(height: 20),
+                  ElevatedButton.icon(
+                    onPressed: _syncing ? null : _syncWithCloud,
+                    icon: _syncing 
+                        ? const SizedBox(
+                            width: 16,
+                            height: 16,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                              valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+                            ),
+                          )
+                        : const Icon(Icons.cloud_download, size: 18),
+                    label: Text(_syncing ? 'Downloading...' : 'Download from Cloud'),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.blue,
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                    ),
+                  ),
+                ],
+              ),
             ),
           ),
-        ],
-      ),
+        );
+      },
     );
   }
 

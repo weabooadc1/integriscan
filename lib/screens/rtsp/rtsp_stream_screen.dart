@@ -6,6 +6,7 @@ import 'package:integriscan/models/report_models.dart';
 import 'package:integriscan/screens/common/loading_buffer_screen.dart';
 import 'package:integriscan/services/tflite_service.dart';
 import 'package:integriscan/services/frame_capture_service.dart';
+import 'package:integriscan/services/rtsp_frame_capture_service.dart';
 import 'package:integriscan/services/report_service.dart';
 import 'package:integriscan/services/firestore_sync_service.dart';
 import 'package:integriscan/services/ptz_service.dart';
@@ -57,7 +58,7 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> with WidgetsBinding
   /// - 0.6 (60%): Balanced (DEFAULT) - good trade-off between sensitivity and accuracy
   /// - 0.7 (70%): Conservative, fewer false positives but might miss some damage
   /// - 0.8 (80%): Very strict, high confidence only
-  static const double CONFIDENCE_THRESHOLD = 0.6;
+  static const double CONFIDENCE_THRESHOLD = 0.2;
   
   VlcPlayerController? _vlcViewController;
   bool _isPlaying = true;
@@ -292,12 +293,6 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> with WidgetsBinding
         autoPlay: true,
         options: VlcPlayerOptions(
           advanced: VlcAdvancedOptions([
-            '--network-caching=3000',      // Increased for WiFi stability
-            '--rtsp-tcp',                  // Force TCP (more reliable than UDP)
-            '--live-caching=3000',         // Increased live buffer
-            '--rtsp-frame-buffer-size=1000000', // Larger frame buffer
-            '--rtsp-timeout=30',           // 30 second timeout
-            '--tcp-caching=3000',          // TCP caching
             '--no-audio',                  // Disable audio for stability
             '--rtsp-kasenna',              // Better RTSP compatibility
             '--rtsp-wmserver',             // Windows Media Server compatibility
@@ -305,8 +300,8 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> with WidgetsBinding
           ]),
           video: VlcVideoOptions([
             '--no-video-title-show',
-            '--drop-late-frames',          // Drop frames if behind
-            '--skip-frames',               // Skip frames to maintain sync
+            /*'--drop-late-frames',          // Drop frames if behind
+            '--skip-frames',*/             // Skip frames to maintain sync
           ]),
           audio: VlcAudioOptions([
             '--no-audio',                  // Explicitly disable audio
@@ -1065,30 +1060,41 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> with WidgetsBinding
     try {
       print('🔍 Performing single analysis...');
       
-      // Check VLC controller state
-      if (_vlcViewController == null) {
-        print('❌ VLC controller is null');
-        return null;
-      }
+      // NEW: Capture frame directly from RTSP stream instead of widget
+      print('📸 Attempting to capture frame directly from RTSP HTTP snapshot');
+      Uint8List? frameBytes = await RtspFrameCaptureService.captureFrameFromStream(widget.rtspUrl);
       
-      print('🔍 VLC controller state:');
-      print('  - isPlaying: ${_vlcViewController!.value.isPlaying}');
-      print('  - isInitialized: ${_vlcViewController!.value.isInitialized}');
-      print('  - hasError: ${_vlcViewController!.value.hasError}');
-      
-      // Small delay to ensure frame is ready
-      await Future.delayed(const Duration(milliseconds: 100));
-      
-      // Capture frame from VLC player (UI thread only for widget capture)
-      print('📸 Attempting to capture frame from VLC widget');
-      final frameBytes = await FrameCaptureService.captureWidget(_playerKey);
-      
+      // Fallback to widget capture if direct capture fails
       if (frameBytes == null) {
-        print('❌ Frame capture failed - returned null');
-        return null;
+        print('⚠️ Direct HTTP snapshot capture failed, falling back to VLC widget capture');
+        
+        // Check VLC controller state
+        if (_vlcViewController == null) {
+          print('❌ VLC controller is null');
+          return null;
+        }
+        
+        print('🔍 VLC controller state:');
+        print('  - isPlaying: ${_vlcViewController!.value.isPlaying}');
+        print('  - isInitialized: ${_vlcViewController!.value.isInitialized}');
+        print('  - hasError: ${_vlcViewController!.value.hasError}');
+        
+        // Small delay to ensure frame is ready
+        await Future.delayed(const Duration(milliseconds: 100));
+        
+        // Capture frame from VLC player (UI thread only for widget capture)
+        print('📸 Attempting to capture frame from VLC widget');
+        frameBytes = await FrameCaptureService.captureWidget(_playerKey);
+        
+        if (frameBytes == null) {
+          print('❌ Both capture methods failed - returned null');
+          return null;
+        }
+        
+        print('📸 Widget frame captured: ${frameBytes.length} bytes');
+      } else {
+        print('📸 Direct HTTP snapshot captured successfully: ${frameBytes.length} bytes');
       }
-      
-      print('📸 Frame captured successfully: ${frameBytes.length} bytes');
       
       // Run AI inference on main isolate (TFLite uses native platform channels)
       // Note: TFLite inference is already optimized at the native level

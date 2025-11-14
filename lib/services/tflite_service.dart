@@ -16,7 +16,7 @@ class TFLiteService {
   static bool _isFloat16 = false; 
 
  
-  static const String modelPath = 'assets/models/LatestRealDamageDetection32x960.tflite';
+  static const String modelPath = 'assets/models/AdditionaDamageDetection232x960.tflite';
   static const String labelsPath = 'assets/models/labels.txt';
   static int inputSize = 960; 
 
@@ -278,29 +278,110 @@ class TFLiteService {
     }
   }
 
+  /// Letterbox function to resize image while maintaining aspect ratio and adding padding
+  /// NEVER upscales to prevent pixelation
+  static img.Image letterbox(img.Image src, int size) {
+    int w = src.width;
+    int h = src.height;
+
+    // LOG THE ACTUAL INPUT RESOLUTION
+    print('📸 ════════════════════════════════════════');
+    print('📸 CAMERA FRAME ANALYSIS');
+    print('📸 ════════════════════════════════════════');
+    print('📸 Input resolution: ${w}x${h}');
+    print('📸 Target resolution: ${size}x${size}');
+    print('📸 Input pixels: ${w * h}');
+    print('📸 Target pixels: ${size * size}');
+
+    // If source is smaller than target, DON'T upscale (prevents pixelation)
+    if (w <= size && h <= size) {
+      print('⚠️ ════════════════════════════════════════');
+      print('⚠️ WARNING: Input smaller than target!');
+      print('⚠️ ════════════════════════════════════════');
+      print('⚠️ Camera is sending ${w}x${h}');
+      print('⚠️ But model needs ${size}x${size}');
+      print('⚠️ Would need ${(size / w.toDouble()).toStringAsFixed(2)}x upscaling');
+      print('⚠️ Using original size with padding (NO UPSCALING)');
+      print('⚠️ ════════════════════════════════════════');
+      print('⚠️ SOLUTIONS:');
+      print('⚠️ 1. Use main stream URL (subtype=0)');
+      print('⚠️ 2. Remove --drop-late-frames from VLC');
+      print('⚠️ 3. Check camera resolution settings');
+      print('⚠️ ════════════════════════════════════════');
+      
+      // Create canvas with gray padding
+      img.Image canvas = img.Image(size, size);
+      img.fill(canvas, img.getColor(114, 114, 114));
+      
+      // Center the original image without resizing
+      int dx = ((size - w) / 2).round();
+      int dy = ((size - h) / 2).round();
+      
+      img.copyInto(canvas, src, dstX: dx, dstY: dy);
+      
+      print('✅ Padded ${w}x${h} image centered in ${size}x${size} canvas');
+      print('📸 ════════════════════════════════════════\n');
+      return canvas;
+    }
+
+    // Only downscale if image is larger than target
+    double scale = (w > h) ? size / w : size / h;
+    int newW = (w * scale).round();
+    int newH = (h * scale).round();
+
+    print('📐 Scaling to: ${newW}x${newH}');
+    print('📐 Scale factor: ${scale.toStringAsFixed(3)}x (DOWNSCALE)');
+    print('📸 ════════════════════════════════════════\n');
+
+    // Resize image with high-quality interpolation
+    img.Image resized = img.copyResize(
+      src,
+      width: newW,
+      height: newH,
+      interpolation: img.Interpolation.cubic,
+    );
+
+    // Create canvas with gray padding (114, 114, 114) - YOLO standard
+    img.Image canvas = img.Image(size, size);
+    img.fill(canvas, img.getColor(114, 114, 114));
+
+    // Calculate padding to center the image
+    int dx = ((size - newW) / 2).round();
+    int dy = ((size - newH) / 2).round();
+
+    // Composite resized image onto canvas
+    img.copyInto(canvas, resized, dstX: dx, dstY: dy);
+
+    return canvas;
+  }
+
   /// Static version for isolate - Preprocess image for quantized uint8 model
   static List<List<List<List<int>>>>? _preprocessImageQuantizedStatic(Uint8List imageBytes, int inputSize) {
     try {
       img.Image? image = img.decodeImage(imageBytes);
       if (image == null) return null;
 
-      img.Image resized = img.copyResize(image, width: inputSize, height: inputSize);
+      // Use letterbox to maintain aspect ratio and add padding
+      img.Image processed = letterbox(image, inputSize);
 
-      List<List<List<int>>> imageMatrix = [];
-      for (int y = 0; y < inputSize; y++) {
-        List<List<int>> row = [];
-        for (int x = 0; x < inputSize; x++) {
-          final pixel = resized.getPixel(x, y);
-          row.add([
-            img.getRed(pixel),
-            img.getGreen(pixel),
-            img.getBlue(pixel),
-          ]);
-        }
-        imageMatrix.add(row);
-      }
+      List<List<List<int>>> imageMatrix = List.generate(
+        inputSize,
+        (y) => List.generate(
+          inputSize,
+          (x) {
+            final pixel = processed.getPixel(x, y);
+            return [
+              img.getRed(pixel),
+              img.getGreen(pixel),
+              img.getBlue(pixel),
+            ];
+          },
+        ),
+      );
+
       return [imageMatrix];
     } catch (e) {
+      print('Error in quantized preprocessing: $e');
       return null;
     }
   }
@@ -311,23 +392,27 @@ class TFLiteService {
       img.Image? image = img.decodeImage(imageBytes);
       if (image == null) return null;
 
-      img.Image resized = img.copyResize(image, width: inputSize, height: inputSize);
+      // Use letterbox to maintain aspect ratio and add padding
+      img.Image processed = letterbox(image, inputSize);
 
-      List<List<List<double>>> imageMatrix = [];
-      for (int y = 0; y < inputSize; y++) {
-        List<List<double>> row = [];
-        for (int x = 0; x < inputSize; x++) {
-          final pixel = resized.getPixel(x, y);
-          row.add([
-            img.getRed(pixel) / 255.0,
-            img.getGreen(pixel) / 255.0,
-            img.getBlue(pixel) / 255.0,
-          ]);
-        }
-        imageMatrix.add(row);
-      }
+      List<List<List<double>>> imageMatrix = List.generate(
+        inputSize,
+        (y) => List.generate(
+          inputSize,
+          (x) {
+            final pixel = processed.getPixel(x, y);
+            return [
+              img.getRed(pixel) / 255.0,
+              img.getGreen(pixel) / 255.0,
+              img.getBlue(pixel) / 255.0,
+            ];
+          },
+        ),
+      );
+
       return [imageMatrix];
     } catch (e) {
+      print('Error in float32 preprocessing: $e');
       return null;
     }
   }
