@@ -317,86 +317,76 @@ class _ReportDetailScreenState extends State<ReportDetailScreen> {
     
     return Container(
       margin: const EdgeInsets.only(bottom: 16),
-      padding: const EdgeInsets.all(16),
+      padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        color: Colors.grey[100],
+        color: Colors.white,
         borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: Colors.grey.shade200),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // Header showing number of damages in this frame
-          Row(
-            children: [
-              Icon(
-                detections.length > 1 ? Icons.warning_amber : Icons.warning,
-                color: Colors.red,
-                size: 20,
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Text(
-                  detections.length == 1
-                      ? 'Single Damage Detection'
-                      : '${detections.length} Damages in Same Frame',
-                  style: const TextStyle(
-                    fontSize: 16,
-                    fontWeight: FontWeight.w600,
+          // Image section
+          if (imagePath.isNotEmpty) 
+            _buildDetectionImageWithAllBoxes(imagePath, detections),
+          
+          // Detection details
+          Padding(
+            padding: const EdgeInsets.all(12),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                // List all damage types
+                ...detections.asMap().entries.map((entry) {
+                  final detection = entry.value;
+                  final color = _getColorForDamageType(detection.damageType);
+                  
+                  return Padding(
+                    padding: const EdgeInsets.only(bottom: 8),
+                    child: Row(
+                      children: [
+                        Container(
+                          width: 6,
+                          height: 6,
+                          decoration: BoxDecoration(
+                            color: color,
+                            shape: BoxShape.circle,
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            '${detection.damageType}',
+                            style: const TextStyle(
+                              fontSize: 14,
+                              fontWeight: FontWeight.w500,
+                            ),
+                          ),
+                        ),
+                        Text(
+                          '${(detection.confidence * 100).toStringAsFixed(0)}%',
+                          style: TextStyle(
+                            fontSize: 13,
+                            color: Colors.grey[600],
+                            fontWeight: FontWeight.w500,
+                          ),
+                        ),
+                      ],
+                    ),
+                  );
+                }),
+                
+                const SizedBox(height: 4),
+                Text(
+                  _formatDate(detections.first.timestamp),
+                  style: TextStyle(
+                    fontSize: 11,
+                    color: Colors.grey[500],
                   ),
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
-          const SizedBox(height: 12),
-          
-          // List all damage types in this frame
-          ...detections.asMap().entries.map((entry) {
-            final index = entry.key;
-            final detection = entry.value;
-            return Padding(
-              padding: const EdgeInsets.only(bottom: 4),
-              child: Row(
-                children: [
-                  Container(
-                    width: 24,
-                    height: 24,
-                    decoration: BoxDecoration(
-                      color: _getColorForDamageType(detection.damageType),
-                      shape: BoxShape.circle,
-                    ),
-                    child: Center(
-                      child: Text(
-                        '${index + 1}',
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 12,
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: Text(
-                      '${detection.damageType} - ${(detection.confidence * 100).toStringAsFixed(1)}%',
-                      style: const TextStyle(fontSize: 14),
-                    ),
-                  ),
-                ],
-              ),
-            );
-          }),
-          
-          const SizedBox(height: 8),
-          Text(
-            'Detected: ${_formatDate(detections.first.timestamp)}',
-            style: TextStyle(fontSize: 12, color: Colors.grey[600]),
-          ),
-          
-          if (imagePath.isNotEmpty) ...[
-            const SizedBox(height: 12),
-            _buildDetectionImageWithAllBoxes(imagePath, detections),
-          ],
         ],
       ),
     );
@@ -486,21 +476,23 @@ class _ReportDetailScreenState extends State<ReportDetailScreen> {
 
   // Build image with ALL bounding boxes overlaid
   Widget _buildImageWithAllBoundingBoxes(String imagePath, List<DamageDetection> detections) {
-    return SizedBox(
-      height: 200,
-      width: double.infinity,
-      child: Stack(
-        fit: StackFit.expand,
-        children: [
-          // Background image
-          _buildImageWidget(imagePath),
-          
-          // Overlay ALL bounding boxes from this frame
-          CustomPaint(
-            painter: _MultipleBoundingBoxPainter(detections),
-            size: Size.infinite,
-          ),
-        ],
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(8),
+      child: AspectRatio(
+        aspectRatio: 16 / 9, // Match RTSP stream aspect ratio
+        child: Stack(
+          fit: StackFit.expand,
+          children: [
+            // Background image
+            _buildImageWidget(imagePath),
+            
+            // Overlay ALL bounding boxes from this frame
+            CustomPaint(
+              painter: _MultipleBoundingBoxPainter(detections),
+              size: Size.infinite,
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -510,9 +502,8 @@ class _ReportDetailScreenState extends State<ReportDetailScreen> {
     if (imagePath.startsWith('http')) {
       return Image.network(
         imagePath,
-        height: 150,
         width: double.infinity,
-        fit: BoxFit.cover,
+        fit: BoxFit.contain, // Changed from cover to contain to preserve aspect ratio
         // Add memory cache settings to prevent memory issues
         cacheHeight: 300, // Limit cache height
         cacheWidth: 600,  // Limit cache width
@@ -522,7 +513,6 @@ class _ReportDetailScreenState extends State<ReportDetailScreen> {
         loadingBuilder: (context, child, loadingProgress) {
           if (loadingProgress == null) return child;
           return Container(
-            height: 150,
             decoration: BoxDecoration(
               color: Colors.grey[200],
               borderRadius: BorderRadius.circular(8),
@@ -539,7 +529,6 @@ class _ReportDetailScreenState extends State<ReportDetailScreen> {
         errorBuilder: (context, error, stackTrace) {
           print('Error loading network image: $error');
           return Container(
-            height: 150,
             decoration: BoxDecoration(
               color: Colors.grey[200],
               borderRadius: BorderRadius.circular(8),
@@ -562,7 +551,6 @@ class _ReportDetailScreenState extends State<ReportDetailScreen> {
       final file = File(imagePath);
       if (!file.existsSync()) {
         return Container(
-          height: 150,
           decoration: BoxDecoration(
             color: Colors.grey[200],
             borderRadius: BorderRadius.circular(8),
@@ -584,9 +572,8 @@ class _ReportDetailScreenState extends State<ReportDetailScreen> {
       try {
         return Image.file(
           file,
-          height: 150,
           width: double.infinity,
-          fit: BoxFit.cover,
+          fit: BoxFit.contain, // Changed from cover to contain to preserve aspect ratio
           // Add memory cache settings to prevent memory issues
           cacheHeight: 300,
           cacheWidth: 600,
@@ -597,7 +584,6 @@ class _ReportDetailScreenState extends State<ReportDetailScreen> {
             print('Error loading local image: $error');
             print('Stack trace: $stackTrace');
             return Container(
-              height: 150,
               decoration: BoxDecoration(
                 color: Colors.grey[200],
                 borderRadius: BorderRadius.circular(8),
@@ -618,7 +604,6 @@ class _ReportDetailScreenState extends State<ReportDetailScreen> {
       } catch (e) {
         print('Exception creating Image.file widget: $e');
         return Container(
-          height: 150,
           decoration: BoxDecoration(
             color: Colors.grey[200],
             borderRadius: BorderRadius.circular(8),
