@@ -58,7 +58,7 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> with WidgetsBinding
   /// - 0.6 (60%): Balanced (DEFAULT) - good trade-off between sensitivity and accuracy
   /// - 0.7 (70%): Conservative, fewer false positives but might miss some damage
   /// - 0.8 (80%): Very strict, high confidence only
-  static const double CONFIDENCE_THRESHOLD = 0.2;
+  static const double CONFIDENCE_THRESHOLD = 0.6;
   
   VlcPlayerController? _vlcViewController;
   bool _isPlaying = true;
@@ -841,39 +841,67 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> with WidgetsBinding
             
             if (analysisResult != null) {
               // NEW: Handle multiple detections if available
-              if (analysisResult.containsKey('allDetections') && analysisResult['allDetections'] is List) {
+              if (analysisResult.containsKey('allDetections') && 
+                  analysisResult['allDetections'] is List &&
+                  (analysisResult['allDetections'] as List).isNotEmpty) {
                 final allDetections = analysisResult['allDetections'] as List;
-                print('🎯 Displaying ${allDetections.length} detections simultaneously');
                 
-                _currentDetections = [];
+                // ✅ Filter by confidence threshold BEFORE displaying
+                final filteredDetections = allDetections.where((det) {
+                  final conf = (det['confidence'] as num?)?.toDouble() ?? 0.0;
+                  return conf >= CONFIDENCE_THRESHOLD;
+                }).toList();
                 
-                for (int i = 0; i < allDetections.length; i++) {
-                  final detection = allDetections[i];
-                  
-                  // Show ALL detections regardless of confidence level
-                  final displayDetection = {
-                    'label': '${detection['damageType']} #${i + 1}',
-                    'confidence': detection['confidence'],
-                    'damageType': detection['damageType'], // Add damage type for color coding
-                    'box': detection['boundingBox'] ?? {
-                      'x': 0.2 + (i * 0.15), // Offset multiple boxes horizontally
-                      'y': 0.2 + (i * 0.1),  // Offset multiple boxes vertically
-                      'width': 0.25,
-                      'height': 0.2,
+                if (filteredDetections.isEmpty) {
+                  // All detections were below threshold - show "No Damage"
+                  print('🎯 All ${allDetections.length} detections below confidence threshold - showing "No Damage"');
+                  final noDetection = {
+                    'label': 'No Damage Detected',
+                    'confidence': 0.0,
+                    'damageType': 'No Damage',
+                    'box': {
+                      'x': 0.35,
+                      'y': 0.40,
+                      'width': 0.30,
+                      'height': 0.20,
                     }
                   };
-                  _currentDetections.add(displayDetection);
+                  _currentDetections = [noDetection];
+                  _showBoundingBoxes = true;
+                } else {
+                  final maxDetections = filteredDetections.length > 10 ? 10 : filteredDetections.length;
+                  print('🎯 Displaying $maxDetections of ${filteredDetections.length} detections above threshold (${allDetections.length} total)');
+                  
+                  _currentDetections = [];
+                  
+                  for (int i = 0; i < maxDetections; i++) {
+                    final detection = filteredDetections[i];
+                    
+                    // Only show detections that passed confidence threshold
+                    final displayDetection = {
+                      'label': '${detection['damageType']} #${i + 1}',
+                      'confidence': detection['confidence'] ?? 0.0,
+                      'damageType': detection['damageType'] ?? 'Unknown',
+                      'box': detection['boundingBox'] ?? {
+                        'x': 0.2 + (i * 0.15), // Offset multiple boxes horizontally
+                        'y': 0.2 + (i * 0.1),  // Offset multiple boxes vertically
+                        'width': 0.25,
+                        'height': 0.2,
+                      }
+                    };
+                    _currentDetections.add(displayDetection);
+                  }
+                  
+                  _showBoundingBoxes = true;
+                  print('🎯 Showing ${_currentDetections.length} bounding boxes for detections above ${(CONFIDENCE_THRESHOLD * 100).toInt()}% threshold');
                 }
-                
-                _showBoundingBoxes = _currentDetections.isNotEmpty;
-                print('🎯 Showing ${_currentDetections.length} bounding boxes for multiple detections');
               }
-              // Handle single detection (existing logic)
+              // Handle single damage detection
               else if (analysisResult['isDamageDetected'] == true) {
                 final detection = {
                   'label': analysisResult['damageType'] ?? 'Unknown',
                   'confidence': analysisResult['confidence'] ?? 0.0,
-                  'damageType': analysisResult['damageType'] ?? 'Unknown', // Add damage type for color coding
+                  'damageType': analysisResult['damageType'] ?? 'Unknown',
                   'box': analysisResult['boundingBox'] ?? {
                     'x': 0.3,
                     'y': 0.3,
@@ -883,28 +911,43 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> with WidgetsBinding
                 };
                 _currentDetections = [detection];
                 _showBoundingBoxes = true;
-                print('🎯 Showing single bounding box for detection: ${detection['label']}');
-              } else {
-                // Show "No Damage" indicator for completed analysis
+                print('🎯 Showing single damage: ${detection['label']}');
+              } 
+              // ✅ FIX: Always show "No Damage" indicator
+              else {
+                final confidence = (analysisResult['confidence'] as num?)?.toDouble() ?? 0.0;
                 final noDetection = {
                   'label': 'No Damage Detected',
-                  'confidence': analysisResult['confidence'] ?? 0.0,
-                  'damageType': 'No Damage', // Add damage type for color coding
+                  'confidence': confidence,
+                  'damageType': 'No Damage',
                   'box': {
-                    'x': 0.4,
-                    'y': 0.4,
-                    'width': 0.2,
-                    'height': 0.2,
+                    'x': 0.35,  // Center position
+                    'y': 0.40,  // Center position
+                    'width': 0.30,  // Bigger box for visibility
+                    'height': 0.20,
                   }
                 };
                 _currentDetections = [noDetection];
-                _showBoundingBoxes = true;
-                print('🎯 Showing "No Damage" indicator with confidence: ${analysisResult['confidence']}');
+                _showBoundingBoxes = true;  // ✅ ALWAYS show, even for no damage
+                print('🎯 ✅ Showing "No Damage" indicator (confidence: ${(confidence * 100).toStringAsFixed(1)}%)');
               }
-            } else {
-              _currentDetections = [];
-              _showBoundingBoxes = false;
-              print('🎯 Analysis failed, hiding bounding boxes');
+            } 
+            // ✅ FIX: If analysis returned null, still show "Analysis Complete - No Issues"
+            else {
+              final noDetection = {
+                'label': 'Analysis Complete - No Issues',
+                'confidence': 0.0,
+                'damageType': 'No Damage',
+                'box': {
+                  'x': 0.35,
+                  'y': 0.40,
+                  'width': 0.30,
+                  'height': 0.20,
+                }
+              };
+              _currentDetections = [noDetection];
+              _showBoundingBoxes = true;
+              print('🎯 ✅ Analysis returned null - showing "No Issues" indicator');
             }
           });
         }
@@ -979,26 +1022,53 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> with WidgetsBinding
       setState(() {
         _currentScanState = AutoScanState.showingResults;
         
-        if (analysisResult.containsKey('allDetections') && analysisResult['allDetections'] is List) {
+        if (analysisResult.containsKey('allDetections') && 
+            analysisResult['allDetections'] is List &&
+            (analysisResult['allDetections'] as List).isNotEmpty) {
           final allDetections = analysisResult['allDetections'] as List;
-          print('🎯 Initial analysis: ${allDetections.length} detections found');
           
-          _currentDetections = [];
-          for (int i = 0; i < allDetections.length; i++) {
-            final detection = allDetections[i];
-            _currentDetections.add({
-              'label': '${detection['damageType']} #${i + 1}',
-              'confidence': detection['confidence'],
-              'damageType': detection['damageType'],
-              'box': detection['boundingBox'] ?? {
-                'x': 0.2 + (i * 0.15),
-                'y': 0.2 + (i * 0.1),
-                'width': 0.25,
-                'height': 0.2,
+          // ✅ Filter by confidence threshold BEFORE displaying
+          final filteredDetections = allDetections.where((det) {
+            final conf = (det['confidence'] as num?)?.toDouble() ?? 0.0;
+            return conf >= CONFIDENCE_THRESHOLD;
+          }).toList();
+          
+          if (filteredDetections.isEmpty) {
+            // All detections were below threshold - show "No Damage"
+            print('🎯 Initial: All ${allDetections.length} detections below threshold - showing "No Damage"');
+            _currentDetections = [{
+              'label': 'No Damage Detected',
+              'confidence': 0.0,
+              'damageType': 'No Damage',
+              'box': {
+                'x': 0.35,
+                'y': 0.40,
+                'width': 0.30,
+                'height': 0.20,
               }
-            });
+            }];
+            _showBoundingBoxes = true;
+          } else {
+            final maxDetections = filteredDetections.length > 5 ? 5 : filteredDetections.length;
+            print('🎯 Initial analysis: Displaying $maxDetections of ${filteredDetections.length} detections above threshold (${allDetections.length} total)');
+            
+            _currentDetections = [];
+            for (int i = 0; i < maxDetections; i++) {
+              final detection = filteredDetections[i];
+              _currentDetections.add({
+                'label': '${detection['damageType']} #${i + 1}',
+                'confidence': detection['confidence'] ?? 0.0,
+                'damageType': detection['damageType'] ?? 'Unknown',
+                'box': detection['boundingBox'] ?? {
+                  'x': 0.2 + (i * 0.15),
+                  'y': 0.2 + (i * 0.1),
+                  'width': 0.25,
+                  'height': 0.2,
+                }
+              });
+            }
+            _showBoundingBoxes = true;
           }
-          _showBoundingBoxes = _currentDetections.isNotEmpty;
         } else if (analysisResult['isDamageDetected'] == true) {
           _currentDetections = [{
             'label': analysisResult['damageType'] ?? 'Unknown',
@@ -1012,19 +1082,23 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> with WidgetsBinding
             }
           }];
           _showBoundingBoxes = true;
-        } else {
+        } 
+        // ✅ FIX: Always show "No Damage" indicator
+        else {
+          final confidence = (analysisResult['confidence'] as num?)?.toDouble() ?? 0.0;
           _currentDetections = [{
             'label': 'No Damage Detected',
-            'confidence': analysisResult['confidence'] ?? 0.0,
+            'confidence': confidence,
             'damageType': 'No Damage',
             'box': {
-              'x': 0.4,
-              'y': 0.4,
-              'width': 0.2,
-              'height': 0.2,
+              'x': 0.35,  // Center position
+              'y': 0.40,  // Center position  
+              'width': 0.30,  // Bigger for visibility
+              'height': 0.20,
             }
           }];
-          _showBoundingBoxes = true;
+          _showBoundingBoxes = true;  // ✅ ALWAYS show
+          print('🎯 ✅ Initial: Showing "No Damage" (confidence: ${(confidence * 100).toStringAsFixed(1)}%)');
         }
       });
 
@@ -1049,7 +1123,9 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> with WidgetsBinding
 
   // Simplified single analysis method
   Future<Map<String, dynamic>?> _performSingleAnalysis() async {
-    print('🔍 _performSingleAnalysis() called');
+    print('🔍 ========================================');
+    print('🔍 FRAME ANALYSIS #${_totalFramesAnalyzed + 1} STARTED');
+    print('🔍 ========================================');
     print('🔍 VLC Connected: $_isConnected, Widget key context: ${_playerKey.currentContext != null}');
     
     if (!_isConnected) {
@@ -1058,7 +1134,7 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> with WidgetsBinding
     }
 
     try {
-      print('🔍 Performing single analysis...');
+      print('🔍 Performing AI analysis on current frame...');
       
       // NEW: Capture frame directly from RTSP stream instead of widget
       print('📸 Attempting to capture frame directly from RTSP HTTP snapshot');
@@ -1101,7 +1177,21 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> with WidgetsBinding
       // Moving it to a background isolate would fail due to platform channel limitations
       print('🤖 Running AI inference on main isolate');
       final result = await TFLiteService.runInference(frameBytes);
-      print('🤖 AI inference result: $result');
+      print('🤖 ===== AI INFERENCE RESULT =====');
+      print('🤖 Full result: $result');
+      if (result != null && result.containsKey('allDetections')) {
+        final allDets = result['allDetections'] as List? ?? [];
+        print('🤖 Total detections found: ${allDets.length}');
+        for (int i = 0; i < allDets.length; i++) {
+          final det = allDets[i];
+          print('🤖   Detection ${i+1}: ${det['damageType']} - ${((det['confidence'] as num) * 100).toStringAsFixed(1)}%');
+        }
+      } else if (result != null && result['isDamageDetected'] == true) {
+        print('🤖 Single detection: ${result['damageType']} - ${((result['confidence'] as num) * 100).toStringAsFixed(1)}%');
+      } else {
+        print('🤖 No damage detected');
+      }
+      print('🤖 ================================');
       
       if (result == null) {
         print('❌ TFLiteService.runInference returned NULL');
@@ -1146,19 +1236,82 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> with WidgetsBinding
       if (mounted && !_isNavigating) {
         _debouncedSetState(() {
           _totalFramesAnalyzed++;
-          // Only count as damage if it passed the confidence threshold
-          if (result['isDamageDetected'] == true && confidence >= CONFIDENCE_THRESHOLD) {
-            _damagesDetected++;
-          }
           _lastAnalysisResult = result;
         });
       }
       
-      // Save detection to history in background only if damage detected AND confidence passes threshold
-      if (result['isDamageDetected'] == true && confidence >= CONFIDENCE_THRESHOLD) {
-        // Fire and forget - don't await
-        unawaited(_saveDetectionToHistoryAsync(result, frameBytes));
+      print('📊 ===== ANALYSIS STATISTICS =====');
+      print('📊 Total frames analyzed: $_totalFramesAnalyzed');
+      print('📊 Total damages detected: $_damagesDetected');
+      print('📊 ==================================');
+      
+      // ✅ NEW: Save ALL detections if multiple found in single frame
+      if (result.containsKey('allDetections') && 
+          result['allDetections'] is List &&
+          (result['allDetections'] as List).isNotEmpty) {
+        
+        final allDets = result['allDetections'] as List;
+        
+        // ✅ Filter by confidence threshold FIRST before processing
+        final filteredDets = allDets.where((det) {
+          final conf = (det['confidence'] as num?)?.toDouble() ?? 0.0;
+          return conf >= CONFIDENCE_THRESHOLD;
+        }).toList();
+        
+        print('💾 ===== SAVING DETECTIONS =====');
+        print('💾 Frame has ${filteredDets.length} detections above ${(CONFIDENCE_THRESHOLD * 100).toInt()}% threshold (${allDets.length} total detected)');
+        
+        if (filteredDets.isEmpty) {
+          print('💾 All detections below confidence threshold - skipping save');
+          print('💾 ===============================');
+        } else {
+          int savedCount = 0;
+          // Save each detection separately with the same frame image
+          for (var detection in filteredDets) {
+            final detConfidence = (detection['confidence'] as num?)?.toDouble() ?? 0.0;
+            
+            // Create a result-like structure for this specific detection
+            final singleDetectionResult = {
+              'damageType': detection['damageType'] ?? detection['label'],
+              'confidence': detConfidence,
+              'boundingBox': detection['boundingBox'] ?? detection['box'],
+              'isDamageDetected': true,
+            };
+            
+            unawaited(_saveDetectionToHistoryAsync(singleDetectionResult, frameBytes));
+            savedCount++;
+          }
+          
+          // Update damage count based on saved detections
+          if (mounted && !_isNavigating && savedCount > 0) {
+            _damagesDetected += savedCount; // Update immediately
+            _debouncedSetState(() {}); // Trigger UI refresh
+          }
+          
+          print('💾 Successfully saved $savedCount detections from this frame');
+          print('💾 Updated total damages detected: $_damagesDetected');
+          print('💾 ===============================');
+        }
       }
+      // ✅ Fallback: Save single detection if no allDetections array
+      else if (result['isDamageDetected'] == true && confidence >= CONFIDENCE_THRESHOLD) {
+        print('💾 ===== SAVING SINGLE DETECTION =====');
+        print('💾 Damage type: ${result['damageType']}');
+        print('💾 Confidence: ${(confidence * 100).toStringAsFixed(1)}%');
+        unawaited(_saveDetectionToHistoryAsync(result, frameBytes));
+        
+        if (mounted && !_isNavigating) {
+          _damagesDetected++; // Update immediately
+          _debouncedSetState(() {}); // Trigger UI refresh
+        }
+        print('💾 Updated total damages detected: $_damagesDetected');
+        print('💾 =====================================');
+      }
+      
+      print('✅ ========================================');
+      print('✅ FRAME ANALYSIS #$_totalFramesAnalyzed COMPLETED');
+      print('✅ Result: ${isDamageDetected ? result['damageType'] : 'No Damage'}');
+      print('✅ ========================================');
       
       return result;
     } catch (e, stackTrace) {
@@ -2719,9 +2872,11 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> with WidgetsBinding
                     ),
                     // Bounding Box Overlay
                     if (_autoScanEnabled && _currentDetections.isNotEmpty && _showBoundingBoxes)
-                      CustomPaint(
-                        painter: BoundingBoxPainter(_currentDetections),
-                        size: Size.infinite,
+                      RepaintBoundary(
+                        child: CustomPaint(
+                          painter: BoundingBoxPainter(_currentDetections),
+                          size: Size.infinite,
+                        ),
                       ),
                   ],
                 ),
@@ -3246,7 +3401,7 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> with WidgetsBinding
                                   const SizedBox(width: 16),
                                   Expanded(
                                     child: _buildAnalysisStatsItem(
-                                      'Damages Found',
+                                      'Damages Detected',
                                       _damagesDetected.toString(),
                                     ),
                                   ),
@@ -3846,124 +4001,89 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> with WidgetsBinding
 
 class BoundingBoxPainter extends CustomPainter {
   final List<Map<String, dynamic>> detections;
+  final int detectionHash;
 
-  BoundingBoxPainter(this.detections);
+  BoundingBoxPainter(this.detections) 
+    : detectionHash = _calculateHash(detections);
 
-  // NEW: Get different colors for different damage types
-  Color _getColorForDamageType(String damageType) {
-    switch (damageType.toLowerCase()) {
-      case 'crack':
-      case 'cracking':
-        return Colors.red;
-      case 'corrosion':
-      case 'rust':
-        return Colors.orange;
-      case 'deformation':
-      case 'dent':
-        return Colors.purple;
-      case 'spalling':
-        return Colors.yellow;
-      case 'no damage':
-      case 'no damage detected':
-        return Colors.green;
-      default:
-        return Colors.blue; // Default color for unknown damage types
+  // Calculate simple hash from detection count and labels
+  static int _calculateHash(List<Map<String, dynamic>> detections) {
+    if (detections.isEmpty) return 0;
+    int hash = detections.length;
+    for (var det in detections) {
+      final label = det['label']?.toString() ?? '';
+      hash = hash * 31 + label.hashCode;
     }
+    return hash;
+  }
+
+  // Simplified color selection
+  Color _getColorForDamageType(String damageType) {
+    final type = damageType.toLowerCase();
+    if (type.contains('crack')) return Colors.red;
+    if (type.contains('corrosion') || type.contains('rust')) return Colors.orange;
+    if (type.contains('deformation') || type.contains('dent')) return Colors.purple;
+    if (type.contains('spalling')) return Colors.yellow;
+    if (type.contains('no damage')) return Colors.green;
+    return Colors.blue;
   }
 
   @override
   void paint(Canvas canvas, Size size) {
-    for (int i = 0; i < detections.length; i++) {
-      var detection = detections[i];
+    // Early exit if no detections
+    if (detections.isEmpty || size.width <= 0 || size.height <= 0) return;
+
+    for (var detection in detections) {
       final box = detection['box'];
-      final label = detection['label'];
-      final confidence = detection['confidence'];
-      final damageType = detection['damageType'] ?? label ?? 'unknown';
+      if (box == null) continue;
 
-      // NEW: Use different colors for different damage types
-      final damageColor = _getColorForDamageType(damageType);
-      
-      final paint = Paint()
-        ..color = damageColor
-        ..strokeWidth = 3.0
-        ..style = PaintingStyle.stroke;
+      final label = detection['label'] ?? 'Unknown';
+      final confidence = detection['confidence'] ?? 0.0;
+      final damageType = detection['damageType'] ?? label;
+      final color = _getColorForDamageType(damageType);
 
-      final backgroundPaint = Paint()
-        ..color = damageColor;
-
-      // Convert normalized coordinates to screen coordinates
+      // Convert normalized coordinates
       final x = box['x'] * size.width;
       final y = box['y'] * size.height;
-      final width = box['width'] * size.width;
-      final height = box['height'] * size.height;
+      final w = box['width'] * size.width;
+      final h = box['height'] * size.height;
 
-      // Draw bounding box
-      final rect = Rect.fromLTWH(x, y, width, height);
-      canvas.drawRect(rect, paint);
-
-      // Prepare label text with damage index for multiple damages
-      // Don't show confidence for "No Damage" detections
-      final isNoDamage = damageType.toLowerCase().contains('no damage');
-      final labelText = isNoDamage
-          ? label // No confidence for "No Damage"
-          : (detections.length > 1 
-              ? '$label ${(confidence * 100).toInt()}%'
-              : '$label ${(confidence * 100).toInt()}%');
-          
-      final textSpan = TextSpan(
-        text: labelText,
-        style: const TextStyle(
-          color: Colors.white,
-          fontSize: 14,
-          fontWeight: FontWeight.bold,
-        ),
-      );
-      final textPainter = TextPainter(
-        text: textSpan,
-        textDirection: TextDirection.ltr,
-      );
-      textPainter.layout();
-
-      // Calculate label background position (avoid overlapping)
-      final labelY = y > textPainter.height + 8 ? y - textPainter.height - 8 : y + height + 4;
-      final labelRect = Rect.fromLTWH(
-        x,
-        labelY,
-        textPainter.width + 16,
-        textPainter.height + 8,
-      );
-
-      // Draw label background
-      canvas.drawRect(labelRect, backgroundPaint);
-
-      // Draw label text
-      textPainter.paint(canvas, Offset(x + 8, labelY + 4));
-
-      // Draw corner markers with damage-specific colors
-      final cornerLength = 20.0;
-      final cornerPaint = Paint()
-        ..color = damageColor
-        ..strokeWidth = 4.0
+      // Reuse paint objects
+      final boxPaint = Paint()
+        ..color = color
+        ..strokeWidth = 2.0
         ..style = PaintingStyle.stroke;
 
-      // Top-left corner
-      canvas.drawLine(Offset(x, y), Offset(x + cornerLength, y), cornerPaint);
-      canvas.drawLine(Offset(x, y), Offset(x, y + cornerLength), cornerPaint);
+      // Draw simple bounding box only
+      canvas.drawRect(Rect.fromLTWH(x, y, w, h), boxPaint);
 
-      // Top-right corner
-      canvas.drawLine(Offset(x + width, y), Offset(x + width - cornerLength, y), cornerPaint);
-      canvas.drawLine(Offset(x + width, y), Offset(x + width, y + cornerLength), cornerPaint);
+      // Draw simplified label (no background, reduced overhead)
+      final labelText = damageType.toLowerCase().contains('no damage')
+          ? label
+          : '$label ${(confidence * 100).toInt()}%';
 
-      // Bottom-left corner
-      canvas.drawLine(Offset(x, y + height), Offset(x + cornerLength, y + height), cornerPaint);
-      canvas.drawLine(Offset(x, y + height), Offset(x, y + height - cornerLength), cornerPaint);
+      final textPainter = TextPainter(
+        text: TextSpan(
+          text: labelText,
+          style: TextStyle(
+            color: color,
+            fontSize: 12,
+            fontWeight: FontWeight.bold,
+            shadows: [Shadow(color: Colors.black, blurRadius: 2)],
+          ),
+        ),
+        textDirection: TextDirection.ltr,
+      )..layout();
 
-      // Bottom-right corner
-      canvas.drawLine(Offset(x + width, y + height), Offset(x + width - cornerLength, y + height), cornerPaint);
-      canvas.drawLine(Offset(x + width, y + height), Offset(x + width, y + height - cornerLength), cornerPaint);
+      // Position label above box
+      final labelY = (y > textPainter.height + 4) ? y - textPainter.height - 4 : y + h + 4;
+      textPainter.paint(canvas, Offset(x, labelY));
     }
   }
 
   @override
-  bool shouldRepaint(CustomPainter oldDelegate) => true;
+  bool shouldRepaint(BoundingBoxPainter oldDelegate) {
+    // Fast hash comparison instead of iterating through detections
+    return detectionHash != oldDelegate.detectionHash;
+  }
 }

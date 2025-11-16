@@ -804,49 +804,38 @@ class ReportService {
   /// Delete a report and all its associated detections
   static Future<void> deleteReport(String reportId) async {
     try {
-      print('🗑️ Deleting report: $reportId');
+      print('Deleting report: $reportId');
       final db = DatabaseHelper();
-      
       // Soft-mark as deleted immediately so any in-flight upload/sync will skip it
       await db.markReportDeleted(reportId);
-      print('✅ Report marked deleted locally: $reportId');
+      print('Report marked deleted locally: $reportId');
+      // Proceed to delete from local database (hard delete) after marking
+      await db.deleteReport(reportId);
+      print('Report deleted from local database (hard delete): $reportId');
       
-      // IMPORTANT: Delete from Firestore FIRST before local deletion
-      // This ensures cloud deletion happens even if local deletion fails
-      bool cloudDeleteSuccess = false;
+      // Always try to delete from Firestore (let Firestore handle connectivity)
       try {
-        print('🔄 Attempting Firestore deletion...');
+        print('Attempting Firestore deletion...');
         await FirestoreSyncService.deleteReport(reportId)
             .timeout(const Duration(seconds: 30));
-        print('✅ Report deleted from Firestore successfully: $reportId');
-        cloudDeleteSuccess = true;
+        print('Report deleted from Firestore successfully: $reportId');
       } catch (e) {
-        print('❌ Firestore deletion failed for report $reportId: $e');
+        print('Firestore deletion failed for report $reportId: $e');
         if (e.toString().contains('timeout') || e.toString().contains('TimeoutException')) {
-          print('❌ Deletion timed out - network may be slow or unstable');
+          print('Deletion timed out - network may be slow or unstable');
         } else if (e.toString().contains('permission') || e.toString().contains('PERMISSION_DENIED')) {
-          print('❌ Permission denied - user may not be authenticated');
+          print('Permission denied - user may not be authenticated');
         } else if (e.toString().contains('network') || e.toString().contains('unavailable')) {
-          print('❌ Network unavailable - cloud deletion skipped');
+          print('Network unavailable - skipping cloud deletion');
         } else {
-          print('❌ Other Firestore error: $e');
+          print('Other Firestore error: $e');
         }
-        
-        // CRITICAL: If cloud deletion failed, warn the user
-        if (!cloudDeleteSuccess) {
-          print('⚠️ WARNING: Report deleted locally but still exists in cloud!');
-          print('⚠️ It will reappear when you sync from cloud.');
-          // We'll still delete locally, but the report will come back on sync
-        }
+        // Don't rethrow - local deletion succeeded, cloud failure is non-critical
       }
       
-      // Proceed to delete from local database (hard delete)
-      await db.deleteReport(reportId);
-      print('✅ Report deleted from local database (hard delete): $reportId');
-      
-      print('🎉 Report deletion completed: $reportId (Cloud: ${cloudDeleteSuccess ? "✅" : "❌"}, Local: ✅)');
+      print('Report deletion completed: $reportId');
     } catch (e) {
-      print('❌ Error deleting report: $e');
+      print('Error deleting report: $e');
       throw Exception('Failed to delete report: $e');
     }
   }
@@ -854,43 +843,36 @@ class ReportService {
   /// Delete multiple reports
   static Future<void> deleteReports(List<String> reportIds) async {
     try {
-      print('🗑️ Deleting ${reportIds.length} reports: $reportIds');
+      print('Deleting ${reportIds.length} reports: $reportIds');
       final db = DatabaseHelper();
       
-      // IMPORTANT: Delete from Firestore FIRST before local deletion
-      bool cloudDeleteSuccess = false;
+      // Delete from local database first
+      await db.deleteReports(reportIds);
+      print('Reports deleted from local database');
+      
+      // Always try to delete from Firestore (let Firestore handle connectivity)
       try {
-        print('🔄 Attempting bulk Firestore deletion...');
+        print('Attempting bulk Firestore deletion...');
         await FirestoreSyncService.deleteReports(reportIds)
             .timeout(const Duration(seconds: 60)); // Longer timeout for multiple deletes
-        print('✅ All ${reportIds.length} reports deleted from Firestore successfully');
-        cloudDeleteSuccess = true;
+        print('All ${reportIds.length} reports deleted from Firestore successfully');
       } catch (e) {
-        print('❌ Firestore bulk deletion failed for ${reportIds.length} reports: $e');
+        print('Firestore bulk deletion failed for ${reportIds.length} reports: $e');
         if (e.toString().contains('timeout') || e.toString().contains('TimeoutException')) {
-          print('❌ Bulk deletion timed out - network may be slow or too many reports');
+          print('Bulk deletion timed out - network may be slow or too many reports');
         } else if (e.toString().contains('permission') || e.toString().contains('PERMISSION_DENIED')) {
-          print('❌ Permission denied - user may not be authenticated');
+          print('Permission denied - user may not be authenticated');
         } else if (e.toString().contains('network') || e.toString().contains('unavailable')) {
-          print('❌ Network unavailable - cloud deletion skipped');
+          print('Network unavailable - skipping cloud deletion');
         } else {
-          print('❌ Other Firestore error: $e');
+          print('Other Firestore error: $e');
         }
-        
-        // CRITICAL: If cloud deletion failed, warn the user
-        if (!cloudDeleteSuccess) {
-          print('⚠️ WARNING: Reports deleted locally but still exist in cloud!');
-          print('⚠️ They will reappear when you sync from cloud.');
-        }
+        // Don't rethrow - local deletion succeeded, cloud failure is non-critical
       }
       
-      // Delete from local database
-      await db.deleteReports(reportIds);
-      print('✅ Reports deleted from local database');
-      
-      print('🎉 Bulk deletion completed: ${reportIds.length} reports (Cloud: ${cloudDeleteSuccess ? "✅" : "❌"}, Local: ✅)');
+      print('Reports deletion completed');
     } catch (e) {
-      print('❌ Error deleting reports: $e');
+      print('Error deleting reports: $e');
       throw Exception('Failed to delete reports: $e');
     }
   }

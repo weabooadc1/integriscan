@@ -10,7 +10,7 @@ import 'package:provider/provider.dart';
 
 
 const List<String> DEFAULT_RTSP_URLS = [
-'rtsp://admin:admin123@192.168.1.7:554/cam/realmonitor?channel=1&subtype=0', 
+'rtsp://admin:admin123@192.168.1.14:554/cam/realmonitor?channel=1&subtype=0', 
 ];
 
 

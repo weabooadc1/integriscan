@@ -34,17 +34,9 @@ class AuthProvider extends ChangeNotifier {
       
       // If user just signed in (from null to user), sync reports for cross-device compatibility
       if (previousUser == null && user != null) {
-        Logger.info('User signed in, syncing reports for cross-device access...');
-        try {
-          // Sync reports from cloud (download reports from other devices)
-          await ReportService.syncReportsFromCloud(userId: user.uid);
-          // Also sync flagged reports
-          await ReportService.syncFlaggedReportsFromCloud(userId: user.uid);
-          Logger.info('Cross-device report sync completed successfully');
-        } catch (e) {
-          Logger.error('Error during sign-in report sync', e);
-          // Don't block sign-in if sync fails
-        }
+        Logger.info('User signed in, starting background report sync...');
+        // ✅ Run sync in background without blocking (fire and forget)
+        _syncReportsInBackground(user.uid);
       }
     });
   }
@@ -76,17 +68,10 @@ class AuthProvider extends ChangeNotifier {
       _user = userCredential.user;
       await fetchUserProfile();
       
-      // Trigger cross-device report sync after successful sign-in
+      // ✅ Trigger background sync - don't block login navigation
       if (_user != null) {
-        try {
-          Logger.info('Syncing reports after sign-in for cross-device access...');
-          await ReportService.syncReportsFromCloud(userId: _user!.uid);
-          await ReportService.syncFlaggedReportsFromCloud(userId: _user!.uid);
-          Logger.info('Post-signin report sync completed');
-        } catch (e) {
-          Logger.error('Error during post-signin report sync', e);
-          // Don't fail sign-in if sync fails
-        }
+        Logger.info('Starting background report sync after sign-in...');
+        _syncReportsInBackground(_user!.uid);
       }
       
       _setLoading(false);
@@ -315,6 +300,28 @@ class AuthProvider extends ChangeNotifier {
       notifyListeners();
     }
   }
+  /// ✅ Sync reports in background without blocking UI
+  /// This allows immediate login while syncing happens asynchronously
+  void _syncReportsInBackground(String userId) {
+    // Fire and forget - don't await, let it run in background
+    Future.microtask(() async {
+      try {
+        Logger.info('📥 Background sync started for user: $userId');
+        
+        // Download reports from cloud (for cross-device access)
+        await ReportService.syncReportsFromCloud(userId: userId);
+        
+        // Also sync flagged reports
+        await ReportService.syncFlaggedReportsFromCloud(userId: userId);
+        
+        Logger.info('✅ Background report sync completed successfully');
+      } catch (e) {
+        Logger.error('❌ Background sync error (non-blocking)', e);
+        // Don't throw - just log the error, don't interrupt user experience
+      }
+    });
+  }
+
   // Handle Firebase Auth Errors
   String _handleFirebaseAuthError(dynamic error) {
     if (error is FirebaseAuthException) {

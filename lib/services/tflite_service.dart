@@ -16,7 +16,7 @@ class TFLiteService {
   static bool _isFloat16 = false; 
 
  
-  static const String modelPath = 'assets/models/AdditionaDamageDetection232x960.tflite';
+  static const String modelPath = 'assets/models/AdditionaDamageDetection532x960.tflite';
   static const String labelsPath = 'assets/models/labels.txt';
   static int inputSize = 960; 
 
@@ -278,81 +278,38 @@ class TFLiteService {
     }
   }
 
-  /// Letterbox function to resize image while maintaining aspect ratio and adding padding
-  /// NEVER upscales to prevent pixelation
+  /// Resize function to stretch image to exact target size without maintaining aspect ratio
+  /// This will distort the image but ensures full coverage without padding
   static img.Image letterbox(img.Image src, int size) {
     int w = src.width;
     int h = src.height;
 
     // LOG THE ACTUAL INPUT RESOLUTION
     print('📸 ════════════════════════════════════════');
-    print('📸 CAMERA FRAME ANALYSIS');
+    print('📸 CAMERA FRAME ANALYSIS (STRETCH MODE)');
     print('📸 ════════════════════════════════════════');
     print('📸 Input resolution: ${w}x${h}');
     print('📸 Target resolution: ${size}x${size}');
     print('📸 Input pixels: ${w * h}');
     print('📸 Target pixels: ${size * size}');
+    print('📸 Aspect ratio will NOT be maintained');
+    print('📸 ════════════════════════════════════════');
 
-    // If source is smaller than target, DON'T upscale (prevents pixelation)
-    if (w <= size && h <= size) {
-      print('⚠️ ════════════════════════════════════════');
-      print('⚠️ WARNING: Input smaller than target!');
-      print('⚠️ ════════════════════════════════════════');
-      print('⚠️ Camera is sending ${w}x${h}');
-      print('⚠️ But model needs ${size}x${size}');
-      print('⚠️ Would need ${(size / w.toDouble()).toStringAsFixed(2)}x upscaling');
-      print('⚠️ Using original size with padding (NO UPSCALING)');
-      print('⚠️ ════════════════════════════════════════');
-      print('⚠️ SOLUTIONS:');
-      print('⚠️ 1. Use main stream URL (subtype=0)');
-      print('⚠️ 2. Remove --drop-late-frames from VLC');
-      print('⚠️ 3. Check camera resolution settings');
-      print('⚠️ ════════════════════════════════════════');
-      
-      // Create canvas with gray padding
-      img.Image canvas = img.Image(size, size);
-      img.fill(canvas, img.getColor(114, 114, 114));
-      
-      // Center the original image without resizing
-      int dx = ((size - w) / 2).round();
-      int dy = ((size - h) / 2).round();
-      
-      img.copyInto(canvas, src, dstX: dx, dstY: dy);
-      
-      print('✅ Padded ${w}x${h} image centered in ${size}x${size} canvas');
-      print('📸 ════════════════════════════════════════\n');
-      return canvas;
-    }
-
-    // Only downscale if image is larger than target
-    double scale = (w > h) ? size / w : size / h;
-    int newW = (w * scale).round();
-    int newH = (h * scale).round();
-
-    print('📐 Scaling to: ${newW}x${newH}');
-    print('📐 Scale factor: ${scale.toStringAsFixed(3)}x (DOWNSCALE)');
-    print('📸 ════════════════════════════════════════\n');
-
+    // Simply resize to exact target size, stretching if necessary
+    print('📐 Resizing ${w}x${h} → ${size}x${size} (stretch to fit)');
+    
     // Resize image with high-quality interpolation
     img.Image resized = img.copyResize(
       src,
-      width: newW,
-      height: newH,
+      width: size,
+      height: size,
       interpolation: img.Interpolation.cubic,
     );
 
-    // Create canvas with gray padding (114, 114, 114) - YOLO standard
-    img.Image canvas = img.Image(size, size);
-    img.fill(canvas, img.getColor(114, 114, 114));
+    print('✅ Image resized to ${size}x${size} (no padding, aspect ratio not preserved)');
+    print('📸 ════════════════════════════════════════\n');
 
-    // Calculate padding to center the image
-    int dx = ((size - newW) / 2).round();
-    int dy = ((size - newH) / 2).round();
-
-    // Composite resized image onto canvas
-    img.copyInto(canvas, resized, dstX: dx, dstY: dy);
-
-    return canvas;
+    return resized;
   }
 
   /// Static version for isolate - Preprocess image for quantized uint8 model
@@ -610,8 +567,10 @@ class TFLiteService {
 
           allDetections.add({
             'label': damageType,
+            'damageType': damageType, // Add damageType field for consistency
             'confidence': detectionMaxConf,
             'box': boundingBox,
+            'boundingBox': boundingBox, // Add boundingBox alias for consistency
           });
 
           if (detectionMaxConf > maxConfidence) {
@@ -644,7 +603,7 @@ class TFLiteService {
       'timestamp': DateTime.now().millisecondsSinceEpoch,
       'modelType': modelTypeName,
       'boundingBox': bestBoundingBox,
-      'detections': allDetections,
+      'allDetections': allDetections,
     };
   }
 
@@ -702,7 +661,7 @@ class TFLiteService {
       }];
     } else {
       result['boundingBox'] = null;
-      result['detections'] = [];
+      result['allDetections'] = [];
     }
 
     return result;

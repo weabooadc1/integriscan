@@ -271,6 +271,18 @@ class _ReportDetailScreenState extends State<ReportDetailScreen> {
   }
 
   Widget _buildDetectionsList() {
+    // Group detections by image path to show multiple bounding boxes on same image
+    final Map<String, List<DamageDetection>> groupedDetections = {};
+    
+    for (final detection in widget.report.detections) {
+      final imagePath = detection.imagePath;
+      if (groupedDetections.containsKey(imagePath)) {
+        groupedDetections[imagePath]!.add(detection);
+      } else {
+        groupedDetections[imagePath] = [detection];
+      }
+    }
+    
     return Card(
       margin: const EdgeInsets.all(16),
       elevation: 2,
@@ -289,14 +301,20 @@ class _ReportDetailScreenState extends State<ReportDetailScreen> {
               ),
             ),
             const SizedBox(height: 16),
-            ...widget.report.detections.map((detection) => _buildDetectionItem(detection)),
+            // Display grouped detections (one image with all its bounding boxes)
+            ...groupedDetections.entries.map((entry) => 
+              _buildGroupedDetectionItem(entry.key, entry.value)),
           ],
         ),
       ),
     );
   }
 
-  Widget _buildDetectionItem(DamageDetection detection) {
+  // New method to display detections grouped by image
+  Widget _buildGroupedDetectionItem(String imagePath, List<DamageDetection> detections) {
+    // Sort detections by confidence (highest first)
+    detections.sort((a, b) => b.confidence.compareTo(a.confidence));
+    
     return Container(
       margin: const EdgeInsets.only(bottom: 16),
       padding: const EdgeInsets.all(16),
@@ -307,11 +325,20 @@ class _ReportDetailScreenState extends State<ReportDetailScreen> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          // Header showing number of damages in this frame
           Row(
             children: [
+              Icon(
+                detections.length > 1 ? Icons.warning_amber : Icons.warning,
+                color: Colors.red,
+                size: 20,
+              ),
+              const SizedBox(width: 8),
               Expanded(
                 child: Text(
-                  detection.damageType,
+                  detections.length == 1
+                      ? 'Single Damage Detection'
+                      : '${detections.length} Damages in Same Frame',
                   style: const TextStyle(
                     fontSize: 16,
                     fontWeight: FontWeight.w600,
@@ -320,23 +347,82 @@ class _ReportDetailScreenState extends State<ReportDetailScreen> {
               ),
             ],
           ),
+          const SizedBox(height: 12),
+          
+          // List all damage types in this frame
+          ...detections.asMap().entries.map((entry) {
+            final index = entry.key;
+            final detection = entry.value;
+            return Padding(
+              padding: const EdgeInsets.only(bottom: 4),
+              child: Row(
+                children: [
+                  Container(
+                    width: 24,
+                    height: 24,
+                    decoration: BoxDecoration(
+                      color: _getColorForDamageType(detection.damageType),
+                      shape: BoxShape.circle,
+                    ),
+                    child: Center(
+                      child: Text(
+                        '${index + 1}',
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 12,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      '${detection.damageType} - ${(detection.confidence * 100).toStringAsFixed(1)}%',
+                      style: const TextStyle(fontSize: 14),
+                    ),
+                  ),
+                ],
+              ),
+            );
+          }),
+          
           const SizedBox(height: 8),
-          Text('Confidence: ${(detection.confidence * 100).toStringAsFixed(1)}%'),
-          Text('Detected: ${_formatDate(detection.timestamp)}'),
-          if (detection.imagePath.isNotEmpty) ...[
-            const SizedBox(height: 8),
-            _buildDetectionImage(detection),
+          Text(
+            'Detected: ${_formatDate(detections.first.timestamp)}',
+            style: TextStyle(fontSize: 12, color: Colors.grey[600]),
+          ),
+          
+          if (imagePath.isNotEmpty) ...[
+            const SizedBox(height: 12),
+            _buildDetectionImageWithAllBoxes(imagePath, detections),
           ],
         ],
       ),
     );
   }
 
-  Widget _buildDetectionImage(DamageDetection detection) {
+  // Helper method to get color for damage type
+  Color _getColorForDamageType(String damageType) {
+    final type = damageType.toLowerCase();
+    if (type.contains('crack')) return Colors.red;
+    if (type.contains('corrosion') || type.contains('rust')) return Colors.orange;
+    if (type.contains('deformation') || type.contains('dent')) return Colors.purple;
+    if (type.contains('spalling')) return Colors.yellow;
+    if (type.contains('no damage')) return Colors.green;
+    return Colors.blue;
+  }
+
+  // New method to build image with ALL bounding boxes from same frame
+  Widget _buildDetectionImageWithAllBoxes(String imagePath, List<DamageDetection> detections) {
     // Always check if it's a Firebase Storage URL first for cross-device compatibility
-    if (FirebaseStorageService.isFirebaseUrl(detection.imagePath)) {
+    if (FirebaseStorageService.isFirebaseUrl(imagePath)) {
       return FutureBuilder<String>(
-        future: FirebaseStorageService.getDisplayPath(detection.imagePath, detection.reportId, detection.id),
+        future: FirebaseStorageService.getDisplayPath(
+          imagePath, 
+          detections.first.reportId, 
+          detections.first.id
+        ),
         builder: (context, snapshot) {
           if (snapshot.connectionState == ConnectionState.waiting) {
             return Container(
@@ -358,17 +444,17 @@ class _ReportDetailScreenState extends State<ReportDetailScreen> {
             );
           }
           
-          final imagePath = snapshot.data ?? detection.imagePath;
+          final displayPath = snapshot.data ?? imagePath;
           
           return ClipRRect(
             borderRadius: BorderRadius.circular(8),
-            child: _buildImageWidget(imagePath),
+            child: _buildImageWithAllBoundingBoxes(displayPath, detections),
           );
         },
       );
     } else {
       // For local files, check if they exist; if not, show a cloud sync message
-      final file = File(detection.imagePath);
+      final file = File(imagePath);
       if (!file.existsSync()) {
         return Container(
           height: 150,
@@ -393,9 +479,30 @@ class _ReportDetailScreenState extends State<ReportDetailScreen> {
       // It's a local file path that exists
       return ClipRRect(
         borderRadius: BorderRadius.circular(8),
-        child: _buildImageWidget(detection.imagePath),
+        child: _buildImageWithAllBoundingBoxes(imagePath, detections),
       );
     }
+  }
+
+  // Build image with ALL bounding boxes overlaid
+  Widget _buildImageWithAllBoundingBoxes(String imagePath, List<DamageDetection> detections) {
+    return SizedBox(
+      height: 200,
+      width: double.infinity,
+      child: Stack(
+        fit: StackFit.expand,
+        children: [
+          // Background image
+          _buildImageWidget(imagePath),
+          
+          // Overlay ALL bounding boxes from this frame
+          CustomPaint(
+            painter: _MultipleBoundingBoxPainter(detections),
+            size: Size.infinite,
+          ),
+        ],
+      ),
+    );
   }
 
   Widget _buildImageWidget(String imagePath) {
@@ -1169,5 +1276,76 @@ class _ReportDetailScreenState extends State<ReportDetailScreen> {
         );
       },
     );
+  }
+}
+
+// CustomPainter for drawing MULTIPLE bounding boxes on detection images
+class _MultipleBoundingBoxPainter extends CustomPainter {
+  final List<DamageDetection> detections;
+
+  _MultipleBoundingBoxPainter(this.detections);
+
+  Color _getColorForDamageType(String damageType) {
+    final type = damageType.toLowerCase();
+    if (type.contains('crack')) return Colors.red;
+    if (type.contains('corrosion') || type.contains('rust')) return Colors.orange;
+    if (type.contains('deformation') || type.contains('dent')) return Colors.purple;
+    if (type.contains('spalling')) return Colors.yellow;
+    if (type.contains('no damage')) return Colors.green;
+    return Colors.blue;
+  }
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    if (size.width <= 0 || size.height <= 0) return;
+
+    // Draw each detection's bounding box
+    for (int i = 0; i < detections.length; i++) {
+      final detection = detections[i];
+      if (detection.boundingBox == null) continue;
+
+      final bbox = detection.boundingBox!;
+      final color = _getColorForDamageType(detection.damageType);
+
+      // Convert normalized coordinates to screen coordinates
+      final x = bbox.x * size.width;
+      final y = bbox.y * size.height;
+      final w = bbox.width * size.width;
+      final h = bbox.height * size.height;
+
+      // Draw simple bounding box with thinner line (matching RTSP style)
+      final boxPaint = Paint()
+        ..color = color
+        ..strokeWidth = 2.0
+        ..style = PaintingStyle.stroke;
+
+      canvas.drawRect(Rect.fromLTWH(x, y, w, h), boxPaint);
+
+      // Draw simplified label with number and confidence
+      final labelText = '${i + 1}. ${detection.damageType} ${(detection.confidence * 100).toInt()}%';
+      final textPainter = TextPainter(
+        text: TextSpan(
+          text: labelText,
+          style: TextStyle(
+            color: color,
+            fontSize: 12,
+            fontWeight: FontWeight.bold,
+            shadows: [Shadow(color: Colors.black, blurRadius: 2)],
+          ),
+        ),
+        textDirection: TextDirection.ltr,
+      )..layout();
+
+      // Position label above box if there's room, otherwise below
+      final labelY = (y > textPainter.height + 4) ? y - textPainter.height - 4 : y + h + 4;
+      
+      // Draw label text (no background for cleaner look)
+      textPainter.paint(canvas, Offset(x, labelY));
+    }
+  }
+
+  @override
+  bool shouldRepaint(_MultipleBoundingBoxPainter oldDelegate) {
+    return detections.length != oldDelegate.detections.length;
   }
 }
