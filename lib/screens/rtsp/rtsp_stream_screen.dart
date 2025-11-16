@@ -869,7 +869,7 @@ class _RtspStreamScreenState extends State<RtspStreamScreen> with WidgetsBinding
                   _currentDetections = [noDetection];
                   _showBoundingBoxes = true;
                 } else {
-                  final maxDetections = filteredDetections.length > 10 ? 10 : filteredDetections.length;
+                  final maxDetections = filteredDetections.length > 5 ? 5 : filteredDetections.length;
                   print('🎯 Displaying $maxDetections of ${filteredDetections.length} detections above threshold (${allDetections.length} total)');
                   
                   _currentDetections = [];
